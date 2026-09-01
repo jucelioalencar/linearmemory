@@ -1,0 +1,15 @@
+name: linearmemory
+
+include:
+  - ./docker/compose/database.compose.yaml
+  - ./docker/compose/application.compose.yaml
+
+networks:
+  default:
+    name: linearmemory
+
+secrets:
+  postgres-password:
+    file: ./.secrets/postgres_password
+  postgres-pgpass:
+    file: ./.secrets/postgres_pgpass

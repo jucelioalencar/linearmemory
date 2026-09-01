@@ -1,0 +1,40 @@
+services:
+  postgres:
+    build:
+      context: ../..
+      dockerfile: docker/postgres/Dockerfile
+      args:
+        PGVECTOR_VERSION: ${PGVECTOR_VERSION:-0.8.6}
+    image: linearmemory/postgres:${LINEARMEMORY_VERSION:-dev}
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-linearmemory}
+      POSTGRES_USER: ${POSTGRES_USER:-linearmemory}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_cron,graph
+      - -c
+      - cron.database_name=${POSTGRES_DB:-linearmemory}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" && psql -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -tAc "SELECT 1 FROM pg_extension WHERE extname = 'graph'" | grep -q 1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres-data:
+    name: linearmemory-postgres-data

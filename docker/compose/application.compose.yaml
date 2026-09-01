@@ -1,0 +1,48 @@
+services:
+  mcp:
+    build:
+      context: ../../apps/mcp
+      dockerfile: Dockerfile
+    image: linearmemory/mcp:${LINEARMEMORY_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-linearmemory}
+      PGUSER: ${POSTGRES_USER:-linearmemory}
+      PGPASSFILE: /run/secrets/postgres-pgpass
+    secrets:
+      - postgres-pgpass
+    ports:
+      - "${MCP_PORT:-3333}:3333"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3333/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    image: linearmemory/web:${LINEARMEMORY_VERSION:-dev}
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:8080"
+    depends_on:
+      mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
