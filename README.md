@@ -15,6 +15,14 @@
   </p>
 </div>
 
+## LinearMemory in action
+
+Explore agent histories, consolidated knowledge, execution replays, and cross-agent relationships in the interactive web interface.
+
+<p align="center">
+  <img src="demo/video.gif" alt="LinearMemory Agentic Knowledge Explorer interactive demo" width="90%" />
+</p>
+
 ## Make agent memory understandable
 
 LinearMemory is a persistent memory system for AI agents. It records observable execution events, consolidates validated knowledge, and connects related memories without turning an agent's internal reasoning into an opaque transcript.
@@ -66,14 +74,6 @@ LinearMemory separates four kinds of information:
 | Support and operations | Auditable incident histories, evidence, outcomes, and validated runbooks. |
 | Research workflows | Traceable hypotheses, sources, conclusions, and links between related findings. |
 | Agent evaluation | Observable execution timelines without storing private chain-of-thought. |
-
-## LinearMemory in action
-
-Explore agent histories, consolidated knowledge, execution replays, and cross-agent relationships in the interactive web interface.
-
-<p align="center">
-  <img src="demo/video.gif" alt="LinearMemory Agentic Knowledge Explorer interactive demo" width="90%" />
-</p>
 
 ## Quick start
 
