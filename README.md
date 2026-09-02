@@ -171,6 +171,12 @@ Every tool input is documented in its JSON Schema so an LLM can determine what b
 > [!NOTE]
 > Reflections are excluded from `search_memory`. They become durable knowledge only when a later execution validates and explicitly consolidates them.
 
+## Agent templates
+
+The [`agents/`](agents/) directory provides an English `automation-pilot` agent pack for OpenCode, Claude Code, OpenAI Codex, Gemini CLI, Cursor, and generic LLM clients. Every platform variant follows one shared browser-automation and LinearMemory behavior contract, with native metadata for its target client.
+
+See [`agents/README.md`](agents/README.md) for supported formats and installation paths.
+
 ## Web explorer
 
 The browser interface presents the same source data through three complementary views:

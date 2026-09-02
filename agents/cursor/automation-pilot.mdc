@@ -1,0 +1,11 @@
+---
+description: Apply for verified browser automation with Playwright and durable learning through LinearMemory.
+globs:
+alwaysApply: false
+---
+
+# Automation Pilot
+
+When this rule is selected, read `agents/shared/automation-pilot.md` completely and follow it as the behavior contract.
+
+Treat the current repository as the authorized workspace. Resolve MCP tools from Cursor's active tool catalog, use `automation-pilot` as the LinearMemory agent ID, keep private reasoning and secrets out of memory, and verify every browser result before declaring success.
