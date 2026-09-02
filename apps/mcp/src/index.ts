@@ -632,8 +632,8 @@ app.get('/health', async (_req, res) => {
 });
 
 app.get('/api/explorer', async (req, res) => {
-  const requestedLimit = Number.parseInt(String(req.query.limit ?? '250'), 10);
-  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 250;
+  const requestedLimit = Number.parseInt(String(req.query.limit ?? ''), 10);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : null;
   const workspaceKey = typeof req.query.workspace === 'string' && req.query.workspace.trim()
     ? req.query.workspace.trim()
     : null;
@@ -804,7 +804,7 @@ app.get('/api/explorer', async (req, res) => {
       executions: executions.rows,
       protocolEvents: protocolEvents.rows,
       reflections: reflections.rows,
-      events: [...events.rows, ...normalizedProtocolEvents].sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at)).slice(0, limit),
+      events: [...events.rows, ...normalizedProtocolEvents].sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at)),
       memories: nodes.rows,
       relations: relations.rows,
       conflicts: conflicts.rows,

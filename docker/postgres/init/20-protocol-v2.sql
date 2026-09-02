@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS memory.execution_events (
     event_type text NOT NULL CHECK (event_type IN (
         'ContextStarted', 'MemorySearched', 'MemoryRead', 'ToolStarted',
         'ToolFinished', 'HypothesisCreated', 'DecisionMade', 'ArtifactCreated',
-        'ProgressUpdated', 'ErrorOccurred', 'CorrectionMade', 'UserFeedbackReceived'
+        'ProgressUpdated', 'ErrorOccurred', 'CorrectionMade', 'UserFeedbackReceived',
+        'MemoryLinked', 'MemoryUnlinked'
     )),
     title text NOT NULL,
     description text NOT NULL,
@@ -65,6 +66,17 @@ CREATE TABLE IF NOT EXISTS memory.execution_events (
     confidence real CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
     UNIQUE (execution_id, sequence)
 );
+
+-- Keep existing installations aligned with the event types exposed by the MCP tools.
+ALTER TABLE memory.execution_events
+    DROP CONSTRAINT IF EXISTS execution_events_event_type_check;
+ALTER TABLE memory.execution_events
+    ADD CONSTRAINT execution_events_event_type_check CHECK (event_type IN (
+        'ContextStarted', 'MemorySearched', 'MemoryRead', 'ToolStarted',
+        'ToolFinished', 'HypothesisCreated', 'DecisionMade', 'ArtifactCreated',
+        'ProgressUpdated', 'ErrorOccurred', 'CorrectionMade', 'UserFeedbackReceived',
+        'MemoryLinked', 'MemoryUnlinked'
+    ));
 
 CREATE TABLE IF NOT EXISTS memory.reflections (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
