@@ -183,7 +183,7 @@ The browser interface presents the same source data through three complementary 
 
 - **Read story** — a chronological, human-readable memory narrative with date, time, agent, and execution context.
 - **Explore relations** — focused cause, dependency, support, validation, and contradiction paths.
-- **Explore in 3D** — an interactive multi-agent graph with event colors, execution replay, correlation edges, filters, fullscreen mode, keyboard navigation, and contextual tooltips.
+- **Explore in 3D** — an interactive multi-agent graph with configurable grouping for repeated records, event colors, execution replay, correlation edges, filters, fullscreen mode, keyboard navigation, and contextual tooltips.
 
 The interface defaults to English and supports Spanish and Portuguese. Dark and white themes are available from Settings.
 
