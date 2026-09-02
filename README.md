@@ -5,6 +5,8 @@
   <p>Durable, observable, and human-readable memory for AI agents.</p>
 
   <p>
+    <a href="https://github.com/jucelioalencar/linearmemory/actions/workflows/release.yml"><img alt="Build and release" src="https://github.com/jucelioalencar/linearmemory/actions/workflows/release.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/jucelioalencar/linearmemory/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/jucelioalencar/linearmemory"></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-7cdd87.svg"></a>
     <img alt="MCP" src="https://img.shields.io/badge/MCP-Streamable_HTTP-7c3aed">
     <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white">
