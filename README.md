@@ -67,6 +67,14 @@ LinearMemory separates four kinds of information:
 | Research workflows | Traceable hypotheses, sources, conclusions, and links between related findings. |
 | Agent evaluation | Observable execution timelines without storing private chain-of-thought. |
 
+## LinearMemory in action
+
+Explore agent histories, consolidated knowledge, execution replays, and cross-agent relationships in the interactive web interface.
+
+<p align="center">
+  <img src="demo/video.gif" alt="LinearMemory Agentic Knowledge Explorer interactive demo" width="90%" />
+</p>
+
 ## Quick start
 
 ### Prerequisites
