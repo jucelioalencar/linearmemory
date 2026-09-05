@@ -18,6 +18,8 @@
     <a href="https://trendshift.io/repositories/213782?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-213782" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Track_on-Trendshift-2563EB?style=for-the-badge" alt="Track LinearMemory on Trendshift" height="28" /></a>
  
 
+[![Known Vulnerabilities](https://snyk.io/test/github/jucelioalencar/linearmemory/badge.svg?targetFile=apps/mcp/package.json)](https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json)
+
 <a href="https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json">
   <img
     alt="Snyk Security"
