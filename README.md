@@ -15,7 +15,7 @@
   </p>
 
   <p>
-    <a href="https://trendshift.io/repositories/213782" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/repositories/213782/opengraph-image-ueey3p?8ff962be29437082" alt="jucelioalencar/linearmemory on Trendshift" width="720" /></a>
+    <a href="https://trendshift.io/repositories/213782" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/repositories/213782/opengraph-image-ueey3p?8ff962be29437082" alt="jucelioalencar/linearmemory on Trendshift" width="420" /></a>
   </p>
 </div>
 
