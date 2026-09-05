@@ -12,7 +12,7 @@
     "benchmark:performance": "node scripts/benchmark-mcp.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test --test-concurrency=1 test/**/*.test.ts",
-    "test:coverage": "node --import tsx --test --test-concurrency=1 --experimental-test-coverage --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=70 test/**/*.test.ts",
+    "test:coverage": "node --import tsx --test --test-concurrency=1 --experimental-test-coverage --test-coverage-exclude=test/** --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=70 test/**/*.test.ts",
     "test:integration": "node scripts/test-integration.mjs"
   },
   "dependencies": {

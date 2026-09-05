@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { createDomain, createWorkspace } from '../src/catalog.js';
+import { createDomain, createWorkspace, updateDomain, updateWorkspace } from '../src/catalog.js';
 import { pool } from '../src/db.js';
 import { createOrReuseSession, finishSessionIfIdle } from '../src/sessions.js';
 
@@ -29,6 +29,21 @@ test('creation is immutable and caller session ids are safely reusable', async (
     );
     const unchanged = await client.query('SELECT name FROM memory.knowledge_domains WHERE id=$1', [domain.id]);
     assert.equal(unchanged.rows[0].name, 'Integration domain');
+    const updatedDomain = await updateDomain(client, {
+      domainId: domain.id,
+      name: 'Updated integration domain',
+      tags: ['test', 'updated'],
+      metadata: { owner: 'integration-suite' },
+      reason: 'Exercise explicit domain updates in the integration suite.'
+    });
+    assert.equal(updatedDomain.name, 'Updated integration domain');
+    assert.deepEqual(updatedDomain.tags, ['test', 'updated']);
+    assert.equal(updatedDomain.metadata.owner, 'integration-suite');
+    assert.match(updatedDomain.metadata.lastUpdateReason, /explicit domain updates/);
+    await assert.rejects(
+      updateDomain(client, { domainId: randomUUID(), name: 'Missing', reason: 'Validate missing domain handling.' }),
+      /Domain not found/
+    );
 
     const firstWorkspace = await createWorkspace(client, {
       domainId: domain.id,
@@ -48,6 +63,20 @@ test('creation is immutable and caller session ids are safely reusable', async (
       creationReason: 'Required by the integration test.',
       metadata: {}
     });
+    const updatedWorkspace = await updateWorkspace(client, {
+      workspaceId: firstWorkspace.id,
+      name: 'Updated workspace A',
+      description: 'Updated workspace boundary used by the integration suite.',
+      metadata: { owner: 'integration-suite' },
+      reason: 'Exercise explicit workspace updates in the integration suite.'
+    });
+    assert.equal(updatedWorkspace.display_name, 'Updated workspace A');
+    assert.equal(updatedWorkspace.metadata.owner, 'integration-suite');
+    assert.match(updatedWorkspace.metadata.lastUpdateReason, /explicit workspace updates/);
+    await assert.rejects(
+      updateWorkspace(client, { workspaceId: randomUUID(), name: 'Missing', reason: 'Validate missing workspace handling.' }),
+      /Workspace not found/
+    );
     const agent = await client.query<{ id: string }>(
       `INSERT INTO memory.agents (agent_key) VALUES ($1) RETURNING id`,
       [`integration-agent-${suffix}`]

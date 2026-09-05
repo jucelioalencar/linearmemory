@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { createDomain, createWorkspace } from '../src/catalog.js';
-import { pool } from '../src/db.js';
+import { ensureAgent, pool } from '../src/db.js';
 import { addProtocolEvent } from '../src/events.js';
 import { createOrReuseSession } from '../src/sessions.js';
 
@@ -17,6 +17,14 @@ test('production PostgreSQL extensions, migrations, and search indexes are avail
     `SELECT 1 FROM pg_indexes WHERE schemaname='memory' AND indexname='memory_nodes_title_similarity_idx'`
   );
   assert.equal(index.rowCount, 1);
+});
+
+test('missing agent identity consistently resolves to agent_default', async () => {
+  const first = await ensureAgent();
+  const reused = await ensureAgent('   ');
+  assert.equal(reused, first);
+  const stored = await pool.query<{ agent_key: string }>('SELECT agent_key FROM memory.agents WHERE id=$1', [first]);
+  assert.equal(stored.rows[0].agent_key, 'agent_default');
 });
 
 test('concurrent protocol events receive a gapless unique execution sequence', async () => {
