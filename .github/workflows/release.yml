@@ -71,23 +71,14 @@ jobs:
           printf '%s' 'workflow-validation-only' > .secrets/postgres_password
           docker compose config --quiet
 
-      - name: Run database integration tests
-        shell: bash
-        env:
-          ALLOW_DATABASE_RESTORE_TESTS: 1
-          PGHOST: 127.0.0.1
-          PGPORT: 5432
-          PGDATABASE: linearmemory
-          PGUSER: linearmemory
-          PGPASSWORD: workflow-validation-only
-        run: |
-          docker compose up -d --wait postgres
-          npm --prefix apps/mcp run migrate:dev
-          npm --prefix apps/mcp test
+      - name: Build test PostgreSQL image
+        run: docker build --tag linearmemory/postgres:test --file docker/postgres/Dockerfile .
 
-      - name: Stop integration services
-        if: always()
-        run: docker compose down -v --remove-orphans
+      - name: Run isolated integration tests
+        working-directory: apps/mcp
+        env:
+          TESTCONTAINERS_POSTGRES_IMAGE: linearmemory/postgres:test
+        run: npm run test:integration
 
   build:
     name: Build ${{ matrix.image }} image

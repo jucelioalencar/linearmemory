@@ -285,6 +285,19 @@ npm run benchmark:performance -- --event-iterations=50 --search-iterations=30
 
 Use `PERFORMANCE_SLOW_REQUEST_MS` to configure the warning threshold, `PERFORMANCE_LOG_CAPACITY` to configure retained samples, and `EMBEDDING_CACHE_SIZE` to configure the in-process semantic-query cache.
 
+### Isolated integration tests
+
+The integration suite uses Testcontainers to start the real LinearMemory PostgreSQL image with pgGraph, pgvector, pg_cron, pg_trgm, and unaccent. It applies every migration, runs database and concurrency tests, validates backup/restore and embedding caching, reports coverage, and removes the temporary database automatically. Your local LinearMemory database is never used.
+
+With Docker running:
+
+```bash
+cd apps/mcp
+npm run test:integration
+```
+
+Set `TESTCONTAINERS_POSTGRES_IMAGE` to use an image that is already built instead of building the PostgreSQL Dockerfile. Pull requests run the same isolated suite in GitHub Actions. Coverage gates require at least 75% lines, 60% branches, and 70% functions.
+
 Useful Make targets are also available:
 
 ```bash

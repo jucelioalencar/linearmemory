@@ -1,0 +1,47 @@
+name: Integration tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testcontainers:
+    name: PostgreSQL and MCP integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/mcp/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/mcp
+        run: npm ci
+
+      - name: Type-check and build
+        working-directory: apps/mcp
+        run: |
+          npm run typecheck
+          npm run build
+
+      - name: Build production PostgreSQL image
+        run: docker build --tag linearmemory/postgres:test --file docker/postgres/Dockerfile .
+
+      - name: Run isolated integration tests
+        working-directory: apps/mcp
+        env:
+          TESTCONTAINERS_POSTGRES_IMAGE: linearmemory/postgres:test
+        run: npm run test:integration

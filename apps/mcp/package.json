@@ -11,7 +11,9 @@
     "start:dev": "tsx src/index.ts",
     "benchmark:performance": "node scripts/benchmark-mcp.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=1 test/**/*.test.ts"
+    "test": "tsx --test --test-concurrency=1 test/**/*.test.ts",
+    "test:coverage": "node --import tsx --test --test-concurrency=1 --experimental-test-coverage --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=70 test/**/*.test.ts",
+    "test:integration": "node scripts/test-integration.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/express": "2.0.0",
@@ -25,6 +27,7 @@
     "@types/express": "5.0.5",
     "@types/node": "24.5.2",
     "@types/pg": "8.15.6",
+    "testcontainers": "^12.0.4",
     "tsx": "4.23.13",
     "typescript": "7.0.2"
   }

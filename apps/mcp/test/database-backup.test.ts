@@ -21,7 +21,9 @@ test('JSON and JSONB backup values are serialized before PostgreSQL import', () 
 test('backup and restore replace the database atomically', {
   skip: process.env.ALLOW_DATABASE_RESTORE_TESTS !== '1'
 }, async () => {
+  let embeddingRequests = 0;
   const provider = createServer((request, response) => {
+    embeddingRequests += 1;
     request.resume();
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ data: [{ embedding: Array.from({ length: 1536 }, () => 0.01) }] }));
@@ -38,6 +40,9 @@ test('backup and restore replace the database atomically', {
     });
     const embedding = await createEmbedding('semantic integration test');
     assert.equal(embedding?.length, 1536);
+    const cachedEmbedding = await createEmbedding('semantic integration test');
+    assert.deepEqual(cachedEmbedding, embedding);
+    assert.equal(embeddingRequests, 1);
 
     const before = await pool.query<{ count: string }>('SELECT count(*)::text AS count FROM memory.workspaces');
     const backup = await createDatabaseBackup();
