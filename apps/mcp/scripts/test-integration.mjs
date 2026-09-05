@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { execPath } from 'node:process';
 import { GenericContainer, Wait } from 'testcontainers';
 
 const repositoryRoot = fileURLToPath(new URL('../../..', import.meta.url));
@@ -10,10 +11,12 @@ const configuredImage = process.env.TESTCONTAINERS_POSTGRES_IMAGE?.trim();
 
 function run(command, args, environment) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const useNpmCli = command === 'npm' && Boolean(process.env.npm_execpath);
+    const executable = useNpmCli ? execPath : command;
+    const commandArgs = useNpmCli ? [process.env.npm_execpath, ...args] : args;
+    const child = spawn(executable, commandArgs, {
       cwd: fileURLToPath(new URL('..', import.meta.url)),
       env: { ...process.env, ...environment },
-      shell: process.platform === 'win32',
       stdio: 'inherit'
     });
     child.once('error', reject);

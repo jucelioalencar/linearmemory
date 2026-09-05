@@ -1,0 +1,12 @@
+version: "1.0"
+
+# These paths intentionally translate local validation failures into API/CLI
+# responses. Throwing inside their guarded blocks is the error-mapping boundary,
+# not an accidentally caught exception.
+exclude:
+  - name: ExceptionCaughtLocallyJS
+    paths:
+      - apps/mcp/src/index.ts
+      - apps/mcp/src/embeddings.ts
+      - apps/mcp/src/backfill-current-relations.ts
+      - apps/web/index.html
