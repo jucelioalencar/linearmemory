@@ -4,7 +4,7 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { pool, ensureAgent } from './db.js';
 import { addProtocolEvent, protocolEventTypes, protocolSources, subscribeToProtocolEvents } from './events.js';
-import { createEmbedding, registerEmbeddingSettingsRoutes, vectorParameter } from './embeddings.js';
+import { createEmbedding, enqueueEmbeddingJob, registerEmbeddingSettingsRoutes, startEmbeddingWorker, vectorParameter } from './embeddings.js';
 import { createDomain, createWorkspace, updateDomain, updateWorkspace } from './catalog.js';
 import { createOrReuseSession, finishSessionIfIdle } from './sessions.js';
 import { registerBackupRoutes } from './backup.js';
@@ -676,7 +676,6 @@ function createServer(): McpServer {
               memoryType: change.memoryType,
               validatedFromReflectionId: change.validatedFromReflectionId ?? null
             }, change.confidence);
-            const embedding = await createEmbedding(`${change.title}\n${change.summary}`);
             const node = await client.query(
               `INSERT INTO memory.memory_nodes
                  (workspace_id,source_session_id,source_execution_event_id,node_type,title,summary,content,confidence,importance,content_hash,embedding)
@@ -685,9 +684,10 @@ function createServer(): McpServer {
                  importance=GREATEST(memory.memory_nodes.importance,EXCLUDED.importance),
                  embedding=COALESCE(EXCLUDED.embedding,memory.memory_nodes.embedding),updated_at=now()
                RETURNING id,node_type,title,summary,status`,
-              [execution.rows[0].workspace_id, execution.rows[0].session_id, event.id, change.memoryType, change.title, change.summary, JSON.stringify({ ...change.content, ...change.story, ...(change.validatedFromReflectionId ? { validatedFromReflectionId: change.validatedFromReflectionId } : {}) }), change.confidence, change.importance, change.contentHash ?? null, vectorParameter(embedding)]
+              [execution.rows[0].workspace_id, execution.rows[0].session_id, event.id, change.memoryType, change.title, change.summary, JSON.stringify({ ...change.content, ...change.story, ...(change.validatedFromReflectionId ? { validatedFromReflectionId: change.validatedFromReflectionId } : {}) }), change.confidence, change.importance, change.contentHash ?? null, null]
             );
             await client.query(`UPDATE memory.execution_events SET metadata=metadata || jsonb_build_object('memoryId',$2::text) WHERE id=$1`, [event.id, node.rows[0].id]);
+            await enqueueEmbeddingJob(client, node.rows[0].id);
             changed.push({ changeType: 'Created', ...node.rows[0] });
           } else {
             if (!change.memoryId) throw new Error(`${change.changeType} memory requires memoryId.`);
@@ -703,8 +703,8 @@ function createServer(): McpServer {
             );
             if (!node.rows[0]) throw new Error(`Memory ${change.memoryId} not found in execution workspace.`);
             if (change.changeType === 'Updated' && (change.title || change.summary)) {
-              const embedding = await createEmbedding(`${node.rows[0].title}\n${node.rows[0].summary}`);
-              if (embedding) await client.query('UPDATE memory.memory_nodes SET embedding=$2::vector WHERE id=$1', [node.rows[0].id, vectorParameter(embedding)]);
+              await client.query('UPDATE memory.memory_nodes SET embedding=NULL WHERE id=$1', [node.rows[0].id]);
+              await enqueueEmbeddingJob(client, node.rows[0].id);
             }
             changed.push({ changeType: change.changeType, ...node.rows[0] });
           }
@@ -1000,6 +1000,7 @@ app.get('/api/explorer', async (req, res) => {
 registerEmbeddingSettingsRoutes(app);
 registerBackupRoutes(app);
 app.all('/mcp', (req, res) => void nodeHandler(req, res, req.body));
+startEmbeddingWorker();
 
 const port = Number.parseInt(process.env.PORT ?? '3333', 10);
 app.listen(port, '0.0.0.0', () => {

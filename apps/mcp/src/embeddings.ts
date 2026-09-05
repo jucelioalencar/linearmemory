@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Express, Request, Response } from 'express';
+import type { PoolClient } from 'pg';
 import { pool } from './db.js';
 
 const EMBEDDING_DIMENSIONS = 1536;
@@ -45,9 +46,22 @@ type EmbeddingState = {
   embeddedMemories: number;
   pendingMemories: number;
   backfillRunning: boolean;
+  queue: {
+    pending: number;
+    processing: number;
+    completed: number;
+    failed: number;
+  };
 };
 
 let backfillRunning = false;
+let workerRunning = false;
+let workerTimer: NodeJS.Timeout | null = null;
+let workerStopping = false;
+const workerId = `embedding-worker-${process.pid}-${randomBytes(4).toString('hex')}`;
+const workerPollMs = Math.max(250, Number.parseInt(process.env.EMBEDDING_WORKER_POLL_MS ?? '1000', 10));
+const workerConcurrency = Math.max(1, Math.min(8, Number.parseInt(process.env.EMBEDDING_WORKER_CONCURRENCY ?? '1', 10)));
+const staleJobMs = Math.max(30_000, Number.parseInt(process.env.EMBEDDING_JOB_STALE_MS ?? '300000', 10));
 const embeddingCache = new Map<string, number[]>();
 const embeddingCacheSize = Math.max(0, Number.parseInt(process.env.EMBEDDING_CACHE_SIZE ?? '256', 10));
 let settingsCache: { value: ResolvedEmbeddingSettings; expiresAt: number } | null = null;
@@ -125,18 +139,23 @@ async function resolveSettings(): Promise<ResolvedEmbeddingSettings> {
 }
 
 export async function getEmbeddingState(): Promise<EmbeddingState> {
-  const [settings, counts] = await Promise.all([
+  const [settings, counts, queueCounts] = await Promise.all([
     resolveSettings(),
     pool.query<{ total: string; embedded: string }>(
       `SELECT count(*) FILTER (WHERE status='active')::text AS total,
               count(*) FILTER (WHERE status='active' AND embedding IS NOT NULL)::text AS embedded
          FROM memory.memory_nodes`
+    ),
+    pool.query<{ status: 'pending' | 'processing' | 'completed' | 'failed'; count: string }>(
+      `SELECT status,count(*)::text AS count FROM memory.embedding_jobs GROUP BY status`
     )
   ]);
   const definition = providerDefinition(settings.provider);
   const totalMemories = Number(counts.rows[0]?.total ?? 0);
   const embeddedMemories = Number(counts.rows[0]?.embedded ?? 0);
   const hasCredential = settings.apiKey.length > 0;
+  const queue = { pending: 0, processing: 0, completed: 0, failed: 0 };
+  for (const row of queueCounts.rows) queue[row.status] = Number(row.count);
   return {
     enabled: settings.enabled,
     configured: settings.endpoint.length > 0 && (!definition.credentialRequired || hasCredential),
@@ -149,7 +168,8 @@ export async function getEmbeddingState(): Promise<EmbeddingState> {
     totalMemories,
     embeddedMemories,
     pendingMemories: Math.max(0, totalMemories - embeddedMemories),
-    backfillRunning
+    backfillRunning: backfillRunning || queue.pending > 0 || queue.processing > 0,
+    queue
   };
 }
 
@@ -189,7 +209,7 @@ export async function saveEmbeddingSettings(input: {
   );
   settingsCache = null;
   embeddingCache.clear();
-  if (input.enabled) void backfillMissingEmbeddings();
+  if (input.enabled) void enqueueMissingEmbeddingJobs().catch(error => console.error('Unable to enqueue missing embeddings.', error));
   return getEmbeddingState();
 }
 
@@ -246,31 +266,180 @@ export function vectorParameter(embedding: number[] | null): string | null {
   return embedding ? `[${embedding.join(',')}]` : null;
 }
 
+type EmbeddingJob = {
+  id: string;
+  memory_id: string;
+  attempts: number;
+  max_attempts: number;
+  generation: number;
+};
+
+export async function enqueueEmbeddingJob(client: PoolClient, memoryId: string, priority = 0): Promise<void> {
+  await client.query(
+    `INSERT INTO memory.embedding_jobs (memory_id,priority)
+     VALUES ($1,$2)
+     ON CONFLICT (memory_id) DO UPDATE SET
+       status='pending',priority=GREATEST(memory.embedding_jobs.priority,EXCLUDED.priority),
+       attempts=0,generation=memory.embedding_jobs.generation+1,available_at=now(),
+       locked_at=NULL,locked_by=NULL,completed_at=NULL,last_error=NULL,updated_at=now()`,
+    [memoryId, priority]
+  );
+}
+
+export async function enqueueMissingEmbeddingJobs(): Promise<number> {
+  const result = await pool.query(
+    `INSERT INTO memory.embedding_jobs (memory_id)
+     SELECT n.id FROM memory.memory_nodes n
+      WHERE n.status='active' AND n.embedding IS NULL
+     ON CONFLICT (memory_id) DO UPDATE SET
+       status=CASE WHEN memory.embedding_jobs.status='processing' THEN 'processing' ELSE 'pending' END,
+       attempts=CASE WHEN memory.embedding_jobs.status IN ('failed','completed') THEN 0 ELSE memory.embedding_jobs.attempts END,
+       available_at=CASE WHEN memory.embedding_jobs.status='processing' THEN memory.embedding_jobs.available_at ELSE now() END,
+       completed_at=CASE WHEN memory.embedding_jobs.status='processing' THEN memory.embedding_jobs.completed_at ELSE NULL END,
+       last_error=CASE WHEN memory.embedding_jobs.status='processing' THEN memory.embedding_jobs.last_error ELSE NULL END,
+       updated_at=now()`
+  );
+  return result.rowCount ?? 0;
+}
+
+async function claimEmbeddingJob(): Promise<EmbeddingJob | null> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE memory.embedding_jobs SET status='pending',locked_at=NULL,locked_by=NULL,
+              available_at=now(),last_error='Recovered after worker lease expired.',updated_at=now()
+        WHERE status='processing' AND locked_at < now()-($1::int * interval '1 millisecond')`,
+      [staleJobMs]
+    );
+    const result = await client.query<EmbeddingJob>(
+      `WITH candidate AS (
+         SELECT id FROM memory.embedding_jobs
+          WHERE status='pending' AND available_at<=now()
+          ORDER BY priority DESC,available_at,id
+          FOR UPDATE SKIP LOCKED LIMIT 1
+       )
+       UPDATE memory.embedding_jobs job SET status='processing',attempts=job.attempts+1,
+              locked_at=now(),locked_by=$1,updated_at=now()
+         FROM candidate WHERE job.id=candidate.id
+       RETURNING job.id::text,job.memory_id,job.attempts,job.max_attempts,job.generation`,
+      [workerId]
+    );
+    await client.query('COMMIT');
+    return result.rows[0] ?? null;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function completeEmbeddingJob(job: EmbeddingJob, embedding: number[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const completed = await client.query(
+      `UPDATE memory.embedding_jobs SET status='completed',completed_at=now(),locked_at=NULL,
+              locked_by=NULL,last_error=NULL,updated_at=now()
+        WHERE id=$1 AND generation=$2 AND status='processing' RETURNING memory_id`,
+      [job.id, job.generation]
+    );
+    if (completed.rows[0]) {
+      await client.query(
+        `UPDATE memory.memory_nodes SET embedding=$2::vector,updated_at=now()
+          WHERE id=$1 AND status='active'`,
+        [job.memory_id, vectorParameter(embedding)]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function failEmbeddingJob(job: EmbeddingJob, error: unknown): Promise<void> {
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000);
+  const failed = job.attempts >= job.max_attempts;
+  const delaySeconds = Math.min(300, 5 * (2 ** Math.max(0, job.attempts - 1)));
+  await pool.query(
+    `UPDATE memory.embedding_jobs SET status=$3,available_at=now()+($4::int * interval '1 second'),
+            locked_at=NULL,locked_by=NULL,last_error=$5,updated_at=now()
+      WHERE id=$1 AND generation=$2 AND status='processing'`,
+    [job.id, job.generation, failed ? 'failed' : 'pending', delaySeconds, message]
+  );
+}
+
+export async function processEmbeddingJob(): Promise<boolean> {
+  const settings = await resolveSettings();
+  const definition = providerDefinition(settings.provider);
+  if (!settings.enabled || !settings.endpoint || (definition.credentialRequired && !settings.apiKey)) return false;
+  const job = await claimEmbeddingJob();
+  if (!job) return false;
+  try {
+    const memory = await pool.query<{ title: string; summary: string; embedding: string | null }>(
+      `SELECT title,summary,embedding::text FROM memory.memory_nodes WHERE id=$1 AND status='active'`,
+      [job.memory_id]
+    );
+    if (!memory.rows[0] || memory.rows[0].embedding) {
+      await pool.query(
+        `UPDATE memory.embedding_jobs SET status='completed',completed_at=now(),locked_at=NULL,
+                locked_by=NULL,last_error=NULL,updated_at=now()
+          WHERE id=$1 AND generation=$2 AND status='processing'`,
+        [job.id, job.generation]
+      );
+      return true;
+    }
+    const embedding = await createEmbedding(`${memory.rows[0].title}\n${memory.rows[0].summary}`);
+    if (!embedding) throw new Error('Embedding provider did not return a vector.');
+    await completeEmbeddingJob(job, embedding);
+  } catch (error) {
+    await failEmbeddingJob(job, error);
+  }
+  return true;
+}
+
+async function workerTick(): Promise<void> {
+  if (workerStopping || workerRunning) return;
+  workerRunning = true;
+  try {
+    await Promise.all(Array.from({ length: workerConcurrency }, () => processEmbeddingJob()));
+  } catch (error) {
+    console.error('Embedding queue worker failed.', error);
+  } finally {
+    workerRunning = false;
+    if (!workerStopping) {
+      workerTimer = setTimeout(() => void workerTick(), workerPollMs);
+      workerTimer.unref();
+    }
+  }
+}
+
+export function startEmbeddingWorker(): void {
+  if (workerTimer || workerRunning) return;
+  workerStopping = false;
+  void enqueueMissingEmbeddingJobs()
+    .catch(error => console.error('Unable to enqueue missing embeddings.', error))
+    .finally(() => void workerTick());
+}
+
+export function stopEmbeddingWorker(): void {
+  workerStopping = true;
+  if (workerTimer) clearTimeout(workerTimer);
+  workerTimer = null;
+}
+
 export async function backfillMissingEmbeddings(): Promise<EmbeddingState> {
-  if (backfillRunning) return getEmbeddingState();
   const state = await getEmbeddingState();
   if (!state.enabled) throw new Error('Enable semantic search before generating embeddings.');
   if (!state.configured) throw new Error('Complete the provider configuration before generating embeddings.');
   backfillRunning = true;
   try {
-    while (true) {
-      const batch = await pool.query<{ id: string; title: string; summary: string }>(
-        `SELECT id,title,summary FROM memory.memory_nodes
-          WHERE status='active' AND embedding IS NULL ORDER BY created_at LIMIT 25`
-      );
-      if (!batch.rowCount) break;
-      let generated = 0;
-      for (const memory of batch.rows) {
-        const embedding = await createEmbedding(`${memory.title}\n${memory.summary}`);
-        if (!embedding) continue;
-        await pool.query(
-          `UPDATE memory.memory_nodes SET embedding=$2::vector WHERE id=$1 AND embedding IS NULL`,
-          [memory.id, vectorParameter(embedding)]
-        );
-        generated += 1;
-      }
-      if (generated === 0) break;
-    }
+    await enqueueMissingEmbeddingJobs();
+    if (!workerTimer && !workerRunning) startEmbeddingWorker();
   } finally {
     backfillRunning = false;
   }
@@ -350,6 +519,19 @@ export function registerEmbeddingSettingsRoutes(app: Express): void {
       res.status(202).json({ ...(await getEmbeddingState()), backfillRunning: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to start embedding backfill.';
+      res.status(409).json({ error: message });
+    }
+  });
+  app.post('/api/settings/embeddings/jobs/retry', async (_req: Request, res: Response) => {
+    try {
+      const retried = await pool.query(
+        `UPDATE memory.embedding_jobs SET status='pending',attempts=0,available_at=now(),
+                locked_at=NULL,locked_by=NULL,completed_at=NULL,last_error=NULL,updated_at=now()
+          WHERE status='failed'`
+      );
+      res.status(202).json({ retried: retried.rowCount ?? 0, ...(await getEmbeddingState()) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to retry failed embedding jobs.';
       res.status(409).json({ error: message });
     }
   });

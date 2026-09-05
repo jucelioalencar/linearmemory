@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import type { PoolClient } from 'pg';
 import { pool } from './db.js';
+import { enqueueMissingEmbeddingJobs } from './embeddings.js';
 
 const BACKUP_FORMAT = 'linearmemory-backup';
 const BACKUP_VERSION = 1;
@@ -140,6 +141,7 @@ export async function restoreDatabaseBackup(value: unknown): Promise<{ restoredA
     }
     await client.query('COMMIT');
     await pool.query('SELECT * FROM graph.build()').catch(error => console.error('Graph rebuild after restore failed.', error));
+    await enqueueMissingEmbeddingJobs().catch(error => console.error('Unable to enqueue restored memories for embedding.', error));
     return { restoredAt: new Date().toISOString(), rows };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);

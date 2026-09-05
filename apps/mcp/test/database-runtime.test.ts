@@ -13,10 +13,15 @@ test('production PostgreSQL extensions, migrations, and search indexes are avail
   assert.deepEqual(extensions.rows.map(row => row.extname).sort(), ['graph', 'pg_cron', 'pg_trgm', 'unaccent', 'vector']);
   const migrations = await pool.query<{ name: string }>('SELECT name FROM memory.schema_migrations ORDER BY name');
   assert.ok(migrations.rows.some(row => row.name === '003-search-performance.sql'));
+  assert.ok(migrations.rows.some(row => row.name === '004-embedding-job-queue.sql'));
   const index = await pool.query(
     `SELECT 1 FROM pg_indexes WHERE schemaname='memory' AND indexname='memory_nodes_title_similarity_idx'`
   );
   assert.equal(index.rowCount, 1);
+  const queueIndex = await pool.query(
+    `SELECT 1 FROM pg_indexes WHERE schemaname='memory' AND indexname='embedding_jobs_pending_idx'`
+  );
+  assert.equal(queueIndex.rowCount, 1);
 });
 
 test('missing agent identity consistently resolves to agent_default', async () => {
