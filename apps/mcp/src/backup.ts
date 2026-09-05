@@ -86,20 +86,33 @@ function validateBackup(value: unknown): asserts value is DatabaseBackup {
 
 async function importTable(client: PoolClient, table: TableName, data: TableBackup): Promise<void> {
   if (!data.rows.length) return;
-  const currentColumns = await client.query<{ column_name: string }>(
-    `SELECT column_name FROM information_schema.columns
+  const currentColumns = await client.query<{ column_name: string; data_type: string }>(
+    `SELECT column_name,data_type FROM information_schema.columns
       WHERE table_schema='memory' AND table_name=$1 AND is_generated='NEVER'`,
     [table]
   );
   const allowed = new Set(currentColumns.rows.map(row => row.column_name));
+  const dataTypes = new Map(currentColumns.rows.map(row => [row.column_name, row.data_type]));
   if (data.columns.some(column => !allowed.has(column))) throw new Error(`Backup table ${table} contains unknown columns.`);
   const columns = data.columns.map(quoteIdentifier).join(',');
   const placeholders = data.columns.map((_, index) => `$${index + 1}`).join(',');
   const identityOverride = table === 'memory_events' ? ' OVERRIDING SYSTEM VALUE' : '';
   const sql = `INSERT INTO memory.${quoteIdentifier(table)} (${columns})${identityOverride} VALUES (${placeholders})`;
-  for (const row of data.rows) {
-    await client.query(sql, data.columns.map(column => row[column]));
+  for (const [rowIndex, row] of data.rows.entries()) {
+    const values = data.columns.map(column => serializeImportValue(row[column], dataTypes.get(column)));
+    try {
+      await client.query(sql, values);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Unable to restore table ${table}, row ${rowIndex + 1}: ${message}`, { cause: error });
+    }
   }
+}
+
+export function serializeImportValue(value: unknown, dataType?: string): unknown {
+  if (value === null || value === undefined) return value;
+  if (dataType === 'json' || dataType === 'jsonb') return JSON.stringify(value);
+  return value;
 }
 
 export async function restoreDatabaseBackup(value: unknown): Promise<{ restoredAt: string; rows: number }> {
@@ -108,6 +121,9 @@ export async function restoreDatabaseBackup(value: unknown): Promise<{ restoredA
   try {
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext('linearmemory-database-restore'))`);
+    for (const table of tables) {
+      await client.query(`ALTER TABLE memory.${quoteIdentifier(table)} DISABLE TRIGGER USER`);
+    }
     await client.query(`TRUNCATE TABLE ${tables.map(table => `memory.${quoteIdentifier(table)}`).join(',')} RESTART IDENTITY CASCADE`);
     let rows = 0;
     for (const table of tables) {
@@ -119,6 +135,9 @@ export async function restoreDatabaseBackup(value: unknown): Promise<{ restoredA
                      GREATEST(COALESCE((SELECT max(sequence) FROM memory.memory_events),0),1),
                      EXISTS (SELECT 1 FROM memory.memory_events))`
     );
+    for (const table of tables) {
+      await client.query(`ALTER TABLE memory.${quoteIdentifier(table)} ENABLE TRIGGER USER`);
+    }
     await client.query('COMMIT');
     await pool.query('SELECT * FROM graph.build()').catch(error => console.error('Graph rebuild after restore failed.', error));
     return { restoredAt: new Date().toISOString(), rows };

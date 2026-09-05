@@ -2,9 +2,21 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { createDatabaseBackup, restoreDatabaseBackup } from '../src/backup.js';
+import { createDatabaseBackup, restoreDatabaseBackup, serializeImportValue } from '../src/backup.js';
 import { pool } from '../src/db.js';
 import { createEmbedding, saveEmbeddingSettings } from '../src/embeddings.js';
+
+test('JSON and JSONB backup values are serialized before PostgreSQL import', () => {
+  const memoryChanges = [
+    { nodeType: 'entity', changeType: 'Created' },
+    { nodeType: 'procedure', changeType: 'Updated' }
+  ];
+
+  assert.equal(serializeImportValue(memoryChanges, 'jsonb'), JSON.stringify(memoryChanges));
+  assert.equal(serializeImportValue({ enabled: false }, 'json'), '{"enabled":false}');
+  assert.deepEqual(serializeImportValue(memoryChanges, 'text[]'), memoryChanges);
+  assert.equal(serializeImportValue(null, 'jsonb'), null);
+});
 
 test('backup and restore replace the database atomically', {
   skip: process.env.ALLOW_DATABASE_RESTORE_TESTS !== '1'

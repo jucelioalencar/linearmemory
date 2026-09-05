@@ -734,8 +734,6 @@ app.get('/api/live', (_req, res) => {
 });
 
 app.get('/api/explorer', async (req, res) => {
-  const requestedLimit = Number.parseInt(String(req.query.limit ?? ''), 10);
-  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 5000) : 500;
   const workspaceKey = typeof req.query.workspace === 'string' && req.query.workspace.trim()
     ? req.query.workspace.trim()
     : null;
@@ -769,9 +767,8 @@ app.get('/api/explorer', async (req, res) => {
                 SELECT 1 FROM memory.execution_events pe
                  WHERE pe.metadata->>'legacyEventId'=e.id::text
             )
-          ORDER BY e.sequence DESC
-          LIMIT $2`,
-        [workspaceKey, limit]
+          ORDER BY e.sequence DESC`,
+        [workspaceKey]
       ),
       pool.query(
         `SELECT n.id, n.node_type, n.title, n.summary, n.content, n.status,
@@ -784,9 +781,8 @@ app.get('/api/explorer', async (req, res) => {
            LEFT JOIN memory.sessions s ON s.id = n.source_session_id
            LEFT JOIN memory.agents a ON a.id = s.agent_id
           WHERE ($1::text IS NULL OR w.workspace_key = $1)
-          ORDER BY n.importance DESC, n.created_at DESC
-          LIMIT $2`,
-        [workspaceKey, limit]
+          ORDER BY n.importance DESC, n.created_at DESC`,
+        [workspaceKey]
       ),
       pool.query(
         `SELECT r.id, r.source_id, r.target_id, r.relation_type, r.weight,
@@ -808,9 +804,8 @@ app.get('/api/explorer', async (req, res) => {
            LEFT JOIN memory.agents source_agent ON source_agent.id = source_session.agent_id
            LEFT JOIN memory.agents target_agent ON target_agent.id = target_session.agent_id
           WHERE ($1::text IS NULL OR w.workspace_key = $1)
-          ORDER BY r.created_at DESC
-          LIMIT $2`,
-        [workspaceKey, limit]
+          ORDER BY r.created_at DESC`,
+        [workspaceKey]
       ),
       pool.query(
         `SELECT c.id, c.memory_a_id, c.memory_b_id, c.conflict_type,
@@ -818,9 +813,8 @@ app.get('/api/explorer', async (req, res) => {
            FROM memory.memory_conflicts c
            JOIN memory.workspaces w ON w.id = c.workspace_id
           WHERE ($1::text IS NULL OR w.workspace_key = $1)
-          ORDER BY c.created_at DESC
-          LIMIT $2`,
-        [workspaceKey, limit]
+          ORDER BY c.created_at DESC`,
+        [workspaceKey]
       ),
       pool.query('SELECT node_count, edge_count, sync_status, needs_rebuild, schema_status FROM graph.status()')
     ]);
@@ -845,7 +839,7 @@ app.get('/api/explorer', async (req, res) => {
            LEFT JOIN memory.knowledge_domains d ON d.id=x.domain_id
            LEFT JOIN memory.agents a ON a.id=x.agent_id
           WHERE ($1::text IS NULL OR w.workspace_key=$1)
-          ORDER BY x.started_at DESC LIMIT $2`, [workspaceKey, limit]
+           ORDER BY x.started_at DESC`, [workspaceKey]
       ),
       pool.query(
         `SELECT pe.id,pe.execution_id,pe.sequence,pe.occurred_at,pe.event_type,pe.title,
@@ -858,7 +852,7 @@ app.get('/api/explorer', async (req, res) => {
            LEFT JOIN memory.knowledge_domains d ON d.id=x.domain_id
            LEFT JOIN memory.agents a ON a.id=x.agent_id
           WHERE ($1::text IS NULL OR w.workspace_key=$1)
-          ORDER BY pe.occurred_at DESC,pe.sequence DESC LIMIT $2`, [workspaceKey, limit]
+           ORDER BY pe.occurred_at DESC,pe.sequence DESC`, [workspaceKey]
       ),
       pool.query(
         `SELECT r.id,r.execution_id,r.what_worked,r.what_failed,r.assumptions,r.lessons_learned,
@@ -868,7 +862,7 @@ app.get('/api/explorer', async (req, res) => {
            JOIN memory.workspaces w ON w.id=x.workspace_id
            LEFT JOIN memory.knowledge_domains d ON d.id=x.domain_id
           WHERE ($1::text IS NULL OR w.workspace_key=$1)
-          ORDER BY r.created_at DESC LIMIT $2`, [workspaceKey, limit]
+           ORDER BY r.created_at DESC`, [workspaceKey]
       ),
       pool.query(
         `SELECT count(DISTINCT n.id)::int AS node_count,
@@ -949,7 +943,7 @@ app.get('/api/explorer', async (req, res) => {
 
     res.json({
       generatedAt: new Date().toISOString(),
-      filter: { workspace: workspaceKey, limit },
+      filter: { workspace: workspaceKey },
       domains: domains.rows,
       workspaces: workspaces.rows,
       executions: executions.rows,
