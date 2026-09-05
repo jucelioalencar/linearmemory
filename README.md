@@ -19,7 +19,8 @@
   </p>
 </div>
 
-[![Snyk Security](https://snyk.io/test/github/jucelioalencar/linearmemory/badge.svg)](https://snyk.io/test/github/jucelioalencar/linearmemory)
+[![Snyk Security](https://snyk.io/test/github/jucelioalencar/linearmemory/badge.svg?targetFile=apps/mcp/package.json)](https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json)
+
 
 ## LinearMemory in action
 
