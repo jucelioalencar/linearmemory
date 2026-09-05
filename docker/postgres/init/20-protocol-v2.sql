@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS memory.executions (
     goal text NOT NULL,
     user_request text NOT NULL,
     expected_outcome text,
-    language text NOT NULL DEFAULT 'pt-BR',
+    language text NOT NULL DEFAULT 'en-US',
     environment text NOT NULL DEFAULT 'unknown',
     model text,
     priority text NOT NULL DEFAULT 'normal'

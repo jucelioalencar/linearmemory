@@ -13,6 +13,8 @@ This directory contains equivalent English configurations for the `automation-pi
 | Cursor | [`cursor/automation-pilot.mdc`](cursor/automation-pilot.mdc) | `.cursor/rules/automation-pilot.mdc` |
 | Other LLM clients | [`generic/automation-pilot.md`](generic/automation-pilot.md) | Use as a system prompt or project instruction file |
 
+The reusable [`linearmemory` skill](skills/linearmemory/SKILL.md) contains the current tool protocol for clients that support skill installation. Install that folder in the client's skills directory; the platform-specific automation agents continue to load the same protocol from the shared contract.
+
 ## Design
 
 - The active workspace is the repository in which the template is installed. Access outside it requires explicit user approval.

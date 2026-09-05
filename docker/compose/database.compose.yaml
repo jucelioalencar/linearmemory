@@ -21,7 +21,7 @@ services:
       - -c
       - cron.database_name=${POSTGRES_DB:-linearmemory}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

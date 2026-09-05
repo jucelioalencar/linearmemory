@@ -1,60 +1,18 @@
 import { createMcpExpressApp } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
-import pg from 'pg';
 import * as z from 'zod/v4';
-
-const { Pool } = pg;
-const pool = new Pool({ max: 10 });
-
-async function ensureAgent(agentKey?: string): Promise<string> {
-  const resolvedAgentKey = agentKey?.trim() || 'agent_default';
-  const result = await pool.query<{ id: string }>(
-    `INSERT INTO memory.agents (agent_key)
-     VALUES ($1)
-     ON CONFLICT (agent_key) DO UPDATE SET agent_key = EXCLUDED.agent_key
-     RETURNING id`,
-    [resolvedAgentKey]
-  );
-  return result.rows[0].id;
-}
-
-const protocolEventTypes = [
-  'ContextStarted', 'MemorySearched', 'MemoryRead', 'ToolStarted', 'ToolFinished',
-  'HypothesisCreated', 'DecisionMade', 'ArtifactCreated', 'ProgressUpdated',
-  'ErrorOccurred', 'CorrectionMade', 'UserFeedbackReceived', 'MemoryLinked',
-  'MemoryUnlinked'
-] as const;
-
-const protocolSources = ['Agent', 'User', 'Tool', 'Memory', 'System'] as const;
+import { pool, ensureAgent } from './db.js';
+import { addProtocolEvent, protocolEventTypes, protocolSources, subscribeToProtocolEvents } from './events.js';
+import { createEmbedding, registerEmbeddingSettingsRoutes, vectorParameter } from './embeddings.js';
+import { createDomain, createWorkspace, updateDomain, updateWorkspace } from './catalog.js';
+import { createOrReuseSession, finishSessionIfIdle } from './sessions.js';
+import { registerBackupRoutes } from './backup.js';
 
 const memoryRelationTypes = [
   'supports', 'depends_on', 'caused', 'contradicts', 'refines', 'implements',
   'validates', 'supersedes', 'related_to'
 ] as const;
-
-async function addProtocolEvent(
-  client: pg.PoolClient,
-  executionId: string,
-  eventType: typeof protocolEventTypes[number],
-  title: string,
-  description: string,
-  source: typeof protocolSources[number],
-  metadata: Record<string, unknown> = {},
-  confidence?: number,
-  occurredAt?: string
-) {
-  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [executionId]);
-  const result = await client.query(
-    `INSERT INTO memory.execution_events
-       (execution_id, sequence, occurred_at, event_type, title, description, source, metadata, confidence)
-     SELECT $1, COALESCE(max(sequence), 0) + 1, COALESCE($2::timestamptz, now()), $3, $4, $5, $6, $7::jsonb, $8
-       FROM memory.execution_events WHERE execution_id = $1
-     RETURNING id, execution_id, sequence, occurred_at, event_type, title, description, source, metadata, confidence`,
-    [executionId, occurredAt ?? null, eventType, title, description, source, JSON.stringify(metadata), confidence ?? null]
-  );
-  return result.rows[0];
-}
 
 function jsonResult(value: unknown) {
   return {
@@ -64,7 +22,7 @@ function jsonResult(value: unknown) {
 }
 
 function createServer(): McpServer {
-  const server = new McpServer({ name: 'linearmemory', version: '2.0.0' });
+  const server = new McpServer({ name: 'linearmemory', version: '0.2.0' });
 
   server.registerTool(
     'find_domain',
@@ -105,16 +63,24 @@ function createServer(): McpServer {
       })
     },
     async ({ domainKey, name, description, tags, metadata }) => {
-      const result = await pool.query(
-        `INSERT INTO memory.knowledge_domains (domain_key, name, description, tags, metadata)
-         VALUES ($1, $2, $3, $4, $5::jsonb)
-         ON CONFLICT (domain_key) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description,
-           tags=EXCLUDED.tags, metadata=memory.knowledge_domains.metadata || EXCLUDED.metadata
-         RETURNING id, domain_key, name, description, tags, metadata, created_at`,
-        [domainKey, name, description, tags, JSON.stringify(metadata)]
-      );
-      return jsonResult(result.rows[0]);
+      return jsonResult(await createDomain(pool, { domainKey, name, description, tags, metadata }));
     }
+  );
+
+  server.registerTool(
+    'update_domain',
+    {
+      description: `Explicitly update an existing knowledge domain. Never call this as a fallback for create_domain. Supply only intentional changes and an observable reason so edits remain auditable. The stable domainKey cannot be changed.`,
+      inputSchema: z.object({
+        domainId: z.string().uuid(),
+        name: z.string().min(2).optional(),
+        description: z.string().min(12).optional(),
+        tags: z.array(z.string().min(1)).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+        reason: z.string().min(12).describe('Observable reason the domain definition needs to change.')
+      })
+    },
+    async input => jsonResult(await updateDomain(pool, input))
   );
 
   server.registerTool(
@@ -184,19 +150,24 @@ function createServer(): McpServer {
       })
     },
     async ({ domainId, workspaceKey, name, description, tags, creationReason, metadata }) => {
-      const result = await pool.query(
-        `INSERT INTO memory.workspaces (domain_id, workspace_key, display_name, description, tags, metadata)
-         SELECT id, $2, $3, $4, $5, $6::jsonb || jsonb_build_object('creationReason',$7::text)
-           FROM memory.knowledge_domains WHERE id=$1
-         ON CONFLICT (workspace_key) DO UPDATE SET domain_id=EXCLUDED.domain_id,
-           display_name=EXCLUDED.display_name, description=EXCLUDED.description, tags=EXCLUDED.tags,
-           metadata=memory.workspaces.metadata || EXCLUDED.metadata
-         RETURNING id, domain_id, workspace_key, display_name, description, tags, metadata, created_at`,
-        [domainId, workspaceKey, name, description, tags, JSON.stringify(metadata), creationReason]
-      );
-      if (!result.rows[0]) throw new Error('Domain not found. Call find_domain before creating a workspace.');
-      return jsonResult(result.rows[0]);
+      return jsonResult(await createWorkspace(pool, { domainId, workspaceKey, name, description, tags, creationReason, metadata }));
     }
+  );
+
+  server.registerTool(
+    'update_workspace',
+    {
+      description: `Explicitly update an existing workspace definition. The stable workspaceKey and parent domain cannot be changed. Supply only intentional changes and an observable reason.`,
+      inputSchema: z.object({
+        workspaceId: z.string().uuid(),
+        name: z.string().min(2).optional(),
+        description: z.string().min(12).optional(),
+        tags: z.array(z.string().min(1)).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+        reason: z.string().min(12).describe('Observable reason the workspace definition needs to change.')
+      })
+    },
+    async input => jsonResult(await updateWorkspace(pool, input))
   );
 
   server.registerTool(
@@ -212,7 +183,7 @@ function createServer(): McpServer {
         goal: z.string().min(1).describe('Concrete objective this execution must achieve.'),
         userRequest: z.string().min(1).describe('Original user request, preserved verbatim when practical. Do not add hidden instructions or reasoning.'),
         expectedOutcome: z.string().min(1).optional().describe('Observable result that would make this execution successful.'),
-        language: z.string().min(2).default('pt-BR').describe('BCP-47 language used for user-facing output, for example pt-BR or en-US.'),
+        language: z.string().min(2).default('en-US').describe('BCP-47 language used for user-facing output, for example en-US, es-ES or pt-BR.'),
         environment: z.string().min(1).describe('Execution environment, for example local-docker, production or ci.'),
         model: z.string().min(1).optional().describe('Model identifier when known.'),
         priority: z.enum(['low', 'normal', 'high', 'critical']).default('normal'),
@@ -226,18 +197,14 @@ function createServer(): McpServer {
         await client.query('BEGIN');
         const workspace = await client.query('SELECT id FROM memory.workspaces WHERE id=$1 AND domain_id=$2', [workspaceId, domainId]);
         if (!workspace.rows[0]) throw new Error('Workspace does not belong to the selected domain. Call find_workspace again.');
-        const session = await client.query<{ id: string }>(
-          `INSERT INTO memory.sessions (id, workspace_id, agent_id, task, metadata)
-           VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5::jsonb)
-           RETURNING id`, [sessionId ?? null, workspaceId, resolvedAgentId, goal, JSON.stringify({ environment })]
-        );
+        const resolvedSessionId = await createOrReuseSession(client, { sessionId, workspaceId, agentId: resolvedAgentId, task: goal, metadata: { environment } });
         const execution = await client.query(
           `INSERT INTO memory.executions
              (id, domain_id, workspace_id, session_id, agent_id, goal, user_request,
               expected_outcome, language, environment, model, priority, metadata)
            VALUES (COALESCE($1::uuid, gen_random_uuid()),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
            RETURNING id, domain_id, workspace_id, session_id, goal, status, started_at`,
-          [executionId ?? null, domainId, workspaceId, session.rows[0].id, resolvedAgentId, goal, userRequest, expectedOutcome ?? null, language, environment, model ?? null, priority, JSON.stringify(metadata)]
+          [executionId ?? null, domainId, workspaceId, resolvedSessionId, resolvedAgentId, goal, userRequest, expectedOutcome ?? null, language, environment, model ?? null, priority, JSON.stringify(metadata)]
         );
         const contextEvent = await addProtocolEvent(client, execution.rows[0].id, 'ContextStarted', 'Execution context started', goal, 'System', { language, environment, priority });
         await client.query('COMMIT');
@@ -260,27 +227,53 @@ function createServer(): McpServer {
       })
     },
     async ({ executionId, query, scope, memoryTypes, limit }) => {
+      const queryEmbedding = await createEmbedding(query);
+      const queryVector = vectorParameter(queryEmbedding);
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        const execution = await client.query<{ workspace_id: string; domain_id: string }>('SELECT workspace_id, domain_id FROM memory.executions WHERE id=$1 AND status=\'active\'', [executionId]);
+        const execution = await client.query<{ workspace_id: string; domain_id: string; language: string }>('SELECT workspace_id, domain_id, language FROM memory.executions WHERE id=$1 AND status=\'active\'', [executionId]);
         if (!execution.rows[0]) throw new Error('Active execution not found. Call begin_context first.');
+        const language = execution.rows[0].language.toLowerCase();
+        const searchConfiguration = language.startsWith('pt') ? 'portuguese' : language.startsWith('es') ? 'spanish' : 'english';
         const memories = await client.query(
-          `SELECT n.id, n.node_type, n.title, n.summary, n.content, n.confidence, n.importance,
-                  w.id AS workspace_id, w.workspace_key, COALESCE(a.agent_key,'agent_default') AS agent_id,
-                  ts_rank_cd(n.search_document, plainto_tsquery('simple',$2)) + similarity(n.title || ' ' || n.summary,$2) AS relevance
-             FROM memory.memory_nodes n
-             JOIN memory.workspaces w ON w.id=n.workspace_id
-             LEFT JOIN memory.sessions s ON s.id=n.source_session_id
-             LEFT JOIN memory.agents a ON a.id=s.agent_id
-            WHERE n.status='active'
-              AND (($3='Workspace' AND w.id=$1) OR ($3='Domain' AND w.domain_id=$4))
-              AND (cardinality($5::text[])=0 OR n.node_type=ANY($5::text[]))
-              AND (n.search_document @@ plainto_tsquery('simple',$2) OR similarity(n.title || ' ' || n.summary,$2) > 0.08)
-            ORDER BY relevance DESC, n.importance DESC, n.created_at DESC LIMIT $6`,
-          [execution.rows[0].workspace_id, query, scope, execution.rows[0].domain_id, memoryTypes, limit]
+          `WITH candidates AS (
+             SELECT n.id,n.node_type,n.title,n.summary,n.content,n.confidence,n.importance,n.created_at,
+                    w.id AS workspace_id,w.workspace_key,COALESCE(a.agent_key,'agent_default') AS agent_id,
+                    ts_rank_cd(to_tsvector($8::regconfig,unaccent(n.title || ' ' || n.summary)),
+                               plainto_tsquery($8::regconfig,unaccent($2)))
+                      + similarity(unaccent(n.title || ' ' || n.summary),unaccent($2)) AS lexical_relevance,
+                    CASE WHEN $7::vector IS NULL OR n.embedding IS NULL THEN 0
+                         ELSE GREATEST(0,1-(n.embedding <=> $7::vector)) END AS semantic_relevance
+               FROM memory.memory_nodes n
+               JOIN memory.workspaces w ON w.id=n.workspace_id
+               LEFT JOIN memory.sessions s ON s.id=n.source_session_id
+               LEFT JOIN memory.agents a ON a.id=s.agent_id
+              WHERE n.status='active'
+                AND (($3='Workspace' AND w.id=$1) OR ($3='Domain' AND w.domain_id=$4))
+                AND (cardinality($5::text[])=0 OR n.node_type=ANY($5::text[]))
+           )
+           SELECT *,CASE WHEN $7::vector IS NULL THEN lexical_relevance
+                         ELSE (.55*LEAST(1,lexical_relevance))+(.45*semantic_relevance) END AS relevance
+             FROM candidates
+            WHERE lexical_relevance > .08 OR ($7::vector IS NOT NULL AND semantic_relevance > .35)
+            ORDER BY relevance DESC,importance DESC,created_at DESC LIMIT $6`,
+          [execution.rows[0].workspace_id, query, scope, execution.rows[0].domain_id, memoryTypes, limit, queryVector, searchConfiguration]
         );
-        const event = await addProtocolEvent(client, executionId, 'MemorySearched', 'Durable memory searched', query, 'Memory', { scope, resultCount: memories.rowCount ?? 0 });
+        const event = await addProtocolEvent(client, executionId, 'MemorySearched', 'Durable memory searched', query, 'Memory', {
+          scope,
+          resultCount: memories.rowCount ?? 0,
+          semanticSearchUsed: queryEmbedding !== null,
+          resultMemoryIds: memories.rows.map(memory => memory.id),
+          results: memories.rows.map(memory => ({
+            id: memory.id,
+            title: memory.title,
+            summary: memory.summary,
+            lexicalRelevance: Number(memory.lexical_relevance ?? 0),
+            semanticRelevance: Number(memory.semantic_relevance ?? 0),
+            relevance: Number(memory.relevance ?? 0)
+          }))
+        });
         await client.query('COMMIT');
         return jsonResult({ results: memories.rows, searchEvent: event, instruction: 'For each result that affects the work, call add_execution_event with eventType MemoryRead and include memoryId in metadata.' });
       } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -505,6 +498,38 @@ function createServer(): McpServer {
   );
 
   server.registerTool(
+    'resolve_memory_conflict',
+    {
+      description: `Resolve or dismiss an open contradiction between two durable memories. Use the exact conflict id, preserve the historical memories, and provide observable evidence for the resolution.`,
+      inputSchema: z.object({
+        executionId: z.string().uuid().describe('Active execution authorizing and auditing the resolution.'),
+        conflictId: z.string().uuid(),
+        outcome: z.enum(['resolved','dismissed']),
+        explanation: z.string().min(12),
+        evidence: z.array(z.string().min(2)).min(1).max(10)
+      })
+    },
+    async ({ executionId, conflictId, outcome, explanation, evidence }) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const conflict = await client.query(
+          `UPDATE memory.memory_conflicts c SET status=$3,resolution=jsonb_build_object('explanation',$4::text,'evidence',$5::jsonb,'executionId',$1::text),resolved_at=now()
+            FROM memory.executions x,memory.workspaces w
+           WHERE c.id=$2 AND c.status='open' AND x.id=$1 AND x.status='active'
+             AND w.id=c.workspace_id AND w.domain_id=x.domain_id
+          RETURNING c.id,c.memory_a_id,c.memory_b_id,c.conflict_type,c.status,c.resolution,c.resolved_at`,
+          [executionId, conflictId, outcome, explanation, JSON.stringify(evidence)]
+        );
+        if (!conflict.rows[0]) throw new Error('Open conflict not found in the active execution domain.');
+        const event = await addProtocolEvent(client, executionId, 'CorrectionMade', 'Memory conflict resolved', explanation, 'Memory', { conflictId, outcome, evidence });
+        await client.query('COMMIT');
+        return jsonResult({ conflict: conflict.rows[0], event });
+      } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+    }
+  );
+
+  server.registerTool(
     'record_reflection',
     {
       description: `Record execution learning separately from durable facts. Use near the end of an execution to capture what worked, what failed, assumptions and reusable lessons. Reflections are never returned by search_memory and never become facts unless a later complete_execution explicitly consolidates validated knowledge.`,
@@ -519,15 +544,53 @@ function createServer(): McpServer {
       })
     },
     async ({ executionId, whatWorked, whatFailed, assumptions, lessonsLearned, suggestedImprovements, confidence }) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await client.query(
+          `INSERT INTO memory.reflections
+             (execution_id, what_worked, what_failed, assumptions, lessons_learned, suggested_improvements, confidence)
+           SELECT id,$2,$3,$4,$5,$6,$7 FROM memory.executions WHERE id=$1 AND status='active'
+           RETURNING id, execution_id, what_worked, what_failed, assumptions, lessons_learned, suggested_improvements, confidence, created_at`,
+          [executionId, whatWorked, whatFailed, assumptions, lessonsLearned, suggestedImprovements, confidence ?? null]
+        );
+        if (!result.rows[0]) throw new Error('Active execution not found.');
+        const event = await addProtocolEvent(client, executionId, 'ReflectionRecorded', 'Execution reflection recorded', 'Process learning was captured separately from durable memory.', 'Agent', { reflectionId: result.rows[0].id }, confidence);
+        await client.query('COMMIT');
+        return jsonResult({ reflection: result.rows[0], event, durableMemoryChanged: false });
+      } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+    }
+  );
+
+  server.registerTool(
+    'search_reflections',
+    {
+      description: `Search prior execution reflections for process learning. Reflections are not durable facts: use them as hypotheses for improving the current execution, and consolidate only knowledge that this execution independently validates.`,
+      annotations: { readOnlyHint: true },
+      inputSchema: z.object({
+        executionId: z.string().uuid().describe('Active execution whose workspace and domain define the authorized search boundary.'),
+        query: z.string().min(1).describe('Focused process problem or lesson to recall.'),
+        scope: z.enum(['Workspace','Domain']).default('Workspace'),
+        limit: z.number().int().min(1).max(50).default(10)
+      })
+    },
+    async ({ executionId, query, scope, limit }) => {
       const result = await pool.query(
-        `INSERT INTO memory.reflections
-           (execution_id, what_worked, what_failed, assumptions, lessons_learned, suggested_improvements, confidence)
-         SELECT id,$2,$3,$4,$5,$6,$7 FROM memory.executions WHERE id=$1
-         RETURNING id, execution_id, what_worked, what_failed, assumptions, lessons_learned, suggested_improvements, confidence, created_at`,
-        [executionId, whatWorked, whatFailed, assumptions, lessonsLearned, suggestedImprovements, confidence ?? null]
+        `WITH context AS (
+           SELECT workspace_id,domain_id FROM memory.executions WHERE id=$1 AND status='active'
+         )
+         SELECT r.id,r.execution_id,r.what_worked,r.what_failed,r.assumptions,r.lessons_learned,
+                r.suggested_improvements,r.confidence,r.created_at,w.workspace_key,
+                similarity(unaccent(array_to_string(r.lessons_learned || r.what_failed || r.what_worked,' ')),unaccent($2)) AS relevance
+           FROM memory.reflections r
+           JOIN memory.executions x ON x.id=r.execution_id
+           JOIN memory.workspaces w ON w.id=x.workspace_id
+           JOIN context c ON (($3='Workspace' AND x.workspace_id=c.workspace_id) OR ($3='Domain' AND x.domain_id=c.domain_id))
+          WHERE similarity(unaccent(array_to_string(r.lessons_learned || r.what_failed || r.what_worked,' ')),unaccent($2)) > .05
+          ORDER BY relevance DESC,r.created_at DESC LIMIT $4`,
+        [executionId, query, scope, limit]
       );
-      if (!result.rows[0]) throw new Error('Execution not found.');
-      return jsonResult({ reflection: result.rows[0], durableMemoryChanged: false });
+      return jsonResult({ results: result.rows, instruction: 'Treat reflections as process hypotheses. Validate them in the current execution before creating durable memory.' });
     }
   );
 
@@ -542,6 +605,7 @@ function createServer(): McpServer {
     confidence: z.number().min(0).max(1).default(0.7),
     importance: z.number().min(0).max(1).default(0.5),
     contentHash: z.string().min(1).optional().describe('Stable idempotency hash for Created memory.'),
+    validatedFromReflectionId: z.string().uuid().optional().describe('For Created memory only: prior reflection validated by this execution. It must belong to the same knowledge domain.'),
     reason: z.string().min(2).optional().describe('Required for Archived or Invalidated; recommended for Updated.')
   });
 
@@ -562,28 +626,40 @@ function createServer(): McpServer {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        const execution = await client.query<{ workspace_id: string; session_id: string; agent_id: string }>(
-          'SELECT workspace_id, session_id, agent_id FROM memory.executions WHERE id=$1 AND status=\'active\' FOR UPDATE', [executionId]
+        const execution = await client.query<{ workspace_id: string; session_id: string; agent_id: string; domain_id: string }>(
+          `SELECT x.workspace_id,x.session_id,x.agent_id,x.domain_id
+             FROM memory.executions x JOIN memory.sessions s ON s.id=x.session_id
+            WHERE x.id=$1 AND x.status='active' FOR UPDATE OF x,s`, [executionId]
         );
         if (!execution.rows[0]) throw new Error('Active execution not found or already completed.');
         const changed: unknown[] = [];
         for (const change of memoryChanges) {
           if (change.changeType === 'Created') {
             if (!change.memoryType || !change.title || !change.summary) throw new Error('Created memory requires memoryType, title and summary.');
-            const event = await client.query<{ id: string }>(
-              `INSERT INTO memory.memory_events (workspace_id,session_id,agent_id,event_type,payload,content_hash)
-               VALUES ($1,$2,$3,'checkpoint',$4::jsonb,$5) RETURNING id`,
-              [execution.rows[0].workspace_id, execution.rows[0].session_id, execution.rows[0].agent_id, JSON.stringify({ title: change.title, summary: change.summary, executionId }), change.contentHash ?? null]
-            );
+            if (change.validatedFromReflectionId) {
+              const reflection = await client.query(
+                `SELECT 1 FROM memory.reflections r JOIN memory.executions source ON source.id=r.execution_id
+                  WHERE r.id=$1 AND source.domain_id=$2`,
+                [change.validatedFromReflectionId, execution.rows[0].domain_id]
+              );
+              if (!reflection.rows[0]) throw new Error('validatedFromReflectionId was not found in the execution domain.');
+            }
+            const event = await addProtocolEvent(client, executionId, 'MemoryConsolidated', change.title, change.summary, 'Memory', {
+              memoryType: change.memoryType,
+              validatedFromReflectionId: change.validatedFromReflectionId ?? null
+            }, change.confidence);
+            const embedding = await createEmbedding(`${change.title}\n${change.summary}`);
             const node = await client.query(
               `INSERT INTO memory.memory_nodes
-                 (workspace_id,source_session_id,source_event_id,node_type,title,summary,content,confidence,importance,content_hash)
-               VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)
+                 (workspace_id,source_session_id,source_execution_event_id,node_type,title,summary,content,confidence,importance,content_hash,embedding)
+               VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11::vector)
                ON CONFLICT (workspace_id,content_hash) DO UPDATE SET confidence=GREATEST(memory.memory_nodes.confidence,EXCLUDED.confidence),
-                 importance=GREATEST(memory.memory_nodes.importance,EXCLUDED.importance), updated_at=now()
+                 importance=GREATEST(memory.memory_nodes.importance,EXCLUDED.importance),
+                 embedding=COALESCE(EXCLUDED.embedding,memory.memory_nodes.embedding),updated_at=now()
                RETURNING id,node_type,title,summary,status`,
-              [execution.rows[0].workspace_id, execution.rows[0].session_id, event.rows[0].id, change.memoryType, change.title, change.summary, JSON.stringify({ ...change.content, ...change.story }), change.confidence, change.importance, change.contentHash ?? null]
+              [execution.rows[0].workspace_id, execution.rows[0].session_id, event.id, change.memoryType, change.title, change.summary, JSON.stringify({ ...change.content, ...change.story, ...(change.validatedFromReflectionId ? { validatedFromReflectionId: change.validatedFromReflectionId } : {}) }), change.confidence, change.importance, change.contentHash ?? null, vectorParameter(embedding)]
             );
+            await client.query(`UPDATE memory.execution_events SET metadata=metadata || jsonb_build_object('memoryId',$2::text) WHERE id=$1`, [event.id, node.rows[0].id]);
             changed.push({ changeType: 'Created', ...node.rows[0] });
           } else {
             if (!change.memoryId) throw new Error(`${change.changeType} memory requires memoryId.`);
@@ -598,14 +674,19 @@ function createServer(): McpServer {
               [change.memoryId, execution.rows[0].workspace_id, newStatus, change.title ?? null, change.summary ?? null, JSON.stringify({ ...change.content, ...change.story }), change.reason ?? null, change.confidence, change.importance]
             );
             if (!node.rows[0]) throw new Error(`Memory ${change.memoryId} not found in execution workspace.`);
+            if (change.changeType === 'Updated' && (change.title || change.summary)) {
+              const embedding = await createEmbedding(`${node.rows[0].title}\n${node.rows[0].summary}`);
+              if (embedding) await client.query('UPDATE memory.memory_nodes SET embedding=$2::vector WHERE id=$1', [node.rows[0].id, vectorParameter(embedding)]);
+            }
             changed.push({ changeType: change.changeType, ...node.rows[0] });
           }
         }
+        await addProtocolEvent(client, executionId, 'ExecutionCompleted', 'Execution completed', finalResponse, 'System', { status, durationMs, memoryChangeCount: changed.length }, confidence);
         await client.query(
           `UPDATE memory.executions SET status=$2,completed_at=now(),duration_ms=$3,final_response=$4,confidence=$5,memory_changes=$6::jsonb WHERE id=$1`,
           [executionId, status, durationMs, finalResponse, confidence, JSON.stringify(changed)]
         );
-        await client.query('UPDATE memory.sessions SET status=$2,finished_at=now() WHERE id=$1', [execution.rows[0].session_id, status]);
+        await finishSessionIfIdle(client, execution.rows[0].session_id);
         await client.query('COMMIT');
         return jsonResult({ executionId, status, durationMs, confidence, memoryChanges: changed });
       } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -618,7 +699,8 @@ function createServer(): McpServer {
 const handler = createMcpHandler(createServer);
 const app = createMcpExpressApp({
   host: '0.0.0.0',
-  allowedHosts: ['localhost', '127.0.0.1', 'mcp']
+  allowedHosts: ['localhost', '127.0.0.1', 'mcp'],
+  jsonLimit: '100mb'
 });
 const nodeHandler = toNodeHandler(handler);
 
@@ -631,9 +713,29 @@ app.get('/health', async (_req, res) => {
   }
 });
 
+app.get('/api/live', (_req, res) => {
+  res.status(200).set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  res.flushHeaders();
+  res.write(`event: ready\ndata: ${JSON.stringify({ connectedAt: new Date().toISOString() })}\n\n`);
+  const unsubscribe = subscribeToProtocolEvents(event => {
+    res.write(`event: memory-event\ndata: ${JSON.stringify(event)}\n\n`);
+  });
+  const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+    res.end();
+  });
+});
+
 app.get('/api/explorer', async (req, res) => {
   const requestedLimit = Number.parseInt(String(req.query.limit ?? ''), 10);
-  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : null;
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 5000) : 500;
   const workspaceKey = typeof req.query.workspace === 'string' && req.query.workspace.trim()
     ? req.query.workspace.trim()
     : null;
@@ -663,6 +765,10 @@ app.get('/api/explorer', async (req, res) => {
            LEFT JOIN memory.agents a ON a.id = e.agent_id
            LEFT JOIN memory.agents session_agent ON session_agent.id = s.agent_id
           WHERE ($1::text IS NULL OR w.workspace_key = $1)
+            AND NOT EXISTS (
+                SELECT 1 FROM memory.execution_events pe
+                 WHERE pe.metadata->>'legacyEventId'=e.id::text
+            )
           ORDER BY e.sequence DESC
           LIMIT $2`,
         [workspaceKey, limit]
@@ -670,7 +776,7 @@ app.get('/api/explorer', async (req, res) => {
       pool.query(
         `SELECT n.id, n.node_type, n.title, n.summary, n.content, n.status,
                 n.confidence, n.importance, n.valid_from, n.valid_until,
-                n.created_at, n.updated_at, n.source_event_id, n.source_session_id,
+                n.created_at, n.updated_at, n.source_event_id, n.source_execution_event_id, n.source_session_id,
                  w.workspace_key, w.domain_id, d.domain_key, COALESCE(a.agent_key, 'agent_default') AS agent_key
            FROM memory.memory_nodes n
            JOIN memory.workspaces w ON w.id = n.workspace_id
@@ -744,7 +850,7 @@ app.get('/api/explorer', async (req, res) => {
       pool.query(
         `SELECT pe.id,pe.execution_id,pe.sequence,pe.occurred_at,pe.event_type,pe.title,
                 pe.description,pe.source,pe.metadata,pe.confidence,w.workspace_key,d.domain_key,
-                x.session_id,x.goal,x.status AS execution_status,
+                x.session_id,x.goal,x.language,x.status AS execution_status,
                 COALESCE(a.agent_key,'agent_default') AS agent_id
            FROM memory.execution_events pe
            JOIN memory.executions x ON x.id=pe.execution_id
@@ -774,7 +880,52 @@ app.get('/api/explorer', async (req, res) => {
       )
     ]);
 
-    const normalizedProtocolEvents = protocolEvents.rows.map(event => ({
+    const enrichedProtocolEvents = await Promise.all(protocolEvents.rows.map(async event => {
+      const metadata = event.metadata ?? {};
+      const resultCount = Number(metadata.resultCount ?? 0);
+      const hasStoredResults = Array.isArray(metadata.resultMemoryIds) && metadata.resultMemoryIds.length > 0;
+      if (event.event_type !== 'MemorySearched' || resultCount < 1 || hasStoredResults || !event.description) return event;
+
+      const searchConfiguration = String(event.language ?? 'en').toLowerCase().startsWith('pt')
+        ? 'portuguese'
+        : String(event.language ?? 'en').toLowerCase().startsWith('es') ? 'spanish' : 'english';
+      const reconstructed = await pool.query(
+        `WITH candidates AS (
+           SELECT n.id,n.title,n.summary,
+                  ts_rank_cd(to_tsvector($6::regconfig,unaccent(n.title || ' ' || n.summary)),
+                             plainto_tsquery($6::regconfig,unaccent($1)))
+                    + similarity(unaccent(n.title || ' ' || n.summary),unaccent($1)) AS relevance
+             FROM memory.memory_nodes n
+             JOIN memory.workspaces w ON w.id=n.workspace_id
+             LEFT JOIN memory.knowledge_domains d ON d.id=w.domain_id
+            WHERE n.status='active'
+              AND (($2='Domain' AND d.domain_key=$4) OR ($2<>'Domain' AND w.workspace_key=$3))
+         )
+         SELECT id,title,summary,relevance
+           FROM candidates
+          ORDER BY relevance DESC,id
+          LIMIT $5`,
+        [event.description, metadata.scope ?? 'Workspace', event.workspace_key, event.domain_key, resultCount, searchConfiguration]
+      );
+      return {
+        ...event,
+        metadata: {
+          ...metadata,
+          resultMemoryIds: reconstructed.rows.map(memory => memory.id),
+          results: reconstructed.rows.map(memory => ({
+            id: memory.id,
+            title: memory.title,
+            summary: memory.summary,
+            lexicalRelevance: Number(memory.relevance ?? 0),
+            semanticRelevance: 0,
+            relevance: Number(memory.relevance ?? 0)
+          })),
+          resultsReconstructed: true
+        }
+      };
+    }));
+
+    const normalizedProtocolEvents = enrichedProtocolEvents.map(event => ({
       id: `protocol:${event.id}`,
       protocol_event_id: event.id,
       execution_id: event.execution_id,
@@ -802,7 +953,7 @@ app.get('/api/explorer', async (req, res) => {
       domains: domains.rows,
       workspaces: workspaces.rows,
       executions: executions.rows,
-      protocolEvents: protocolEvents.rows,
+      protocolEvents: enrichedProtocolEvents,
       reflections: reflections.rows,
       events: [...events.rows, ...normalizedProtocolEvents].sort((a, b) => Date.parse(b.occurred_at) - Date.parse(a.occurred_at)),
       memories: nodes.rows,
@@ -820,6 +971,8 @@ app.get('/api/explorer', async (req, res) => {
     res.status(500).json({ error: 'Unable to load memory explorer data.' });
   }
 });
+registerEmbeddingSettingsRoutes(app);
+registerBackupRoutes(app);
 app.all('/mcp', (req, res) => void nodeHandler(req, res, req.body));
 
 const port = Number.parseInt(process.env.PORT ?? '3333', 10);

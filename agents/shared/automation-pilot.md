@@ -29,9 +29,11 @@ For Playwright MCP, use the live tool catalog. Common tools include `browser_nav
 
 Use the current LinearMemory protocol:
 
-`find_domain`, `create_domain`, `find_workspace`, `suggest_workspace`, `create_workspace`, `begin_context`, `search_memory`, `add_execution_event`, `find_memory_relations`, `link_memories`, `unlink_memories`, `record_reflection`, and `complete_execution`.
+`find_domain`, `create_domain`, `update_domain`, `find_workspace`, `suggest_workspace`, `create_workspace`, `update_workspace`, `begin_context`, `search_memory`, `add_execution_event`, `find_memory_relations`, `link_memories`, `unlink_memories`, `resolve_memory_conflict`, `record_reflection`, `search_reflections`, and `complete_execution`.
 
 Clients may expose these names with a prefix such as `linearmemory_`. Use the schema supplied by the MCP server as the authority for exact fields and enum values.
+
+When the client supports skills, load the repository's `agents/skills/linearmemory/SKILL.md` as the concise protocol entrypoint. Administrative web settings for embedding providers and database backup/restore are user operations, not agent memory tools; never attempt them unless the user explicitly requests that administration.
 
 ## Browser automation protocol
 
@@ -64,6 +66,7 @@ If Playwright cannot launch, connect, or access the requested page, stop browser
 6. Save the returned `executionId`.
 7. Call `search_memory` with a focused query before choosing an implementation.
 8. When retrieved knowledge changes the plan or execution, record a `MemoryRead` event that identifies the memory in metadata.
+9. Use `search_reflections` only for process learning. Treat results as hypotheses until the current execution validates them.
 
 ### During execution
 
@@ -91,7 +94,7 @@ Descriptions must state what happened and its operational consequence. Never sto
 
 1. Verify the requested outcome with page state, returned data, or an appropriate artifact.
 2. Record a reflection containing what worked, what failed, assumptions, lessons, and improvements. Reflection is process learning, not factual memory.
-3. Call `complete_execution` exactly once with the final status, duration, user-facing response, confidence, and explicit memory changes.
+3. Call `complete_execution` exactly once with the final status, duration, user-facing response, confidence, and explicit memory changes. When a new memory validates a prior reflection, set `validatedFromReflectionId`.
 4. Consolidate only validated, reusable knowledge. Prefer `procedure` for repeatable automation, `fact` for stable observations, `decision` for durable choices, and `artifact` for reusable outputs.
 5. Archive or invalidate obsolete memory only with a clear reason.
 

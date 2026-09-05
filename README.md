@@ -91,8 +91,6 @@ Set-Location linearmemory
 
 New-Item -ItemType Directory -Force .secrets | Out-Null
 'replace-with-a-local-password' | Set-Content -NoNewline .secrets/postgres_password
-'postgres:5432:linearmemory:linearmemory:replace-with-a-local-password' |
-  Set-Content -NoNewline .secrets/postgres_pgpass
 
 docker compose config
 docker compose up --build -d
@@ -106,8 +104,6 @@ cd linearmemory
 
 mkdir -p .secrets
 printf '%s' 'replace-with-a-local-password' > .secrets/postgres_password
-printf '%s' 'postgres:5432:linearmemory:linearmemory:replace-with-a-local-password' \
-  > .secrets/postgres_pgpass
 
 docker compose config
 docker compose up --build -d
@@ -122,7 +118,30 @@ When all containers are healthy, open the explorer at [http://localhost:3000](ht
 | MCP health | `http://localhost:3333/health` | Service health check |
 | PostgreSQL | `localhost:5432` | Authoritative persistence and graph projection |
 
-Ports can be changed with `WEB_PORT`, `MCP_PORT`, and `POSTGRES_PORT`.
+Ports can be changed with `WEB_PORT`, `MCP_PORT`, and `POSTGRES_PORT`. Services bind to `127.0.0.1` by default; set `BIND_ADDRESS` only when you intentionally need another interface.
+
+### Optional semantic memory
+
+Lexical search works without an external service. Open **Settings → Semantic memory** to choose OpenAI, Azure OpenAI, Ollama, or another OpenAI-compatible provider. Configure its endpoint, model, and optional API credential, then enable semantic search. Provider settings are stored in PostgreSQL and credentials are encrypted before storage using the Docker secret. The API never returns the credential.
+
+The Docker stack includes a private Ollama service and offers two one-click local models. No model weights are downloaded during normal startup; choose **Ollama**, select a model, and click **Download selected model**:
+
+| Local model | Download | Practical requirement | Best fit |
+| --- | ---: | --- | --- |
+| `qwen3-embedding:4b` | about 2.5 GB | 16 GB system RAM; approximately 4–7 GB while active | Recommended balance for CPU-only computers |
+| `qwen3-embedding:8b-q4_K_M` | about 4.7 GB | approximately 8–12 GB while active; 24 GB RAM or a compatible GPU recommended | Better quality, but significantly slower and heavier |
+
+These RAM figures are practical estimates rather than hard limits. The 8B model can run on some 16 GB systems, but other memory-heavy applications should be closed and CPU generation may be slow. The Ollama container image also requires several gigabytes of disk space. Downloaded weights persist in the `linearmemory-ollama-data` Docker volume.
+
+When semantic search is enabled, LinearMemory automatically generates embeddings for existing memories in the background. The same settings page shows progress and can retry missing embeddings. Provider failures never disable lexical search. The current database vector size is 1536 dimensions, so the selected model must return exactly 1536 values.
+
+Environment variables `EMBEDDING_ENDPOINT`, `EMBEDDING_API_KEY`, and `EMBEDDING_MODEL` remain supported as deployment-level fallbacks, but the web configuration takes precedence.
+
+### Backup and restore
+
+Open **Settings → Backup & restore** to download a complete JSON backup of the authoritative `memory` tables. Restore validates the LinearMemory backup format and requires explicit confirmation before atomically replacing the current data. The graph projection is rebuilt after a successful restore.
+
+Encrypted provider credentials are included only as encrypted data. Restoring them to an installation that uses a different encryption secret requires entering the credential again.
 
 ## MCP memory protocol
 
@@ -145,21 +164,25 @@ Every tool input is documented in its JSON Schema so an LLM can determine what b
 | --- | --- |
 | `find_domain` | Find a stable knowledge domain before creating one. |
 | `create_domain` | Create a durable domain only when no suitable candidate exists. |
+| `update_domain` | Intentionally update a domain with an auditable reason. |
 | `find_workspace` | Reuse an existing project or work stream inside a domain. |
 | `suggest_workspace` | Propose a normalized workspace without writing data. |
 | `create_workspace` | Create a workspace after search and validation. |
+| `update_workspace` | Intentionally update a workspace without changing its identity or domain. |
 | `begin_context` | Start an observable execution with identity, goal, request, and environment. |
 | `search_memory` | Retrieve durable facts and decisions relevant to the current work. |
 | `add_execution_event` | Append a small, observable event without private reasoning. |
 | `find_memory_relations` | Inspect current edges and discover candidate memories without creating relations. |
 | `link_memories` | Create or update one explicit, evidence-backed directed relationship. |
 | `unlink_memories` | Remove an incorrect or obsolete relationship and record why. |
+| `resolve_memory_conflict` | Resolve or dismiss a detected contradiction with evidence. |
 | `record_reflection` | Store process learning separately from durable facts. |
+| `search_reflections` | Retrieve process learning without treating it as durable fact. |
 | `complete_execution` | Finish the execution and apply explicit, validated memory changes. |
 
 ### Execution events
 
-`ContextStarted`, `MemorySearched`, `MemoryRead`, `MemoryLinked`, `MemoryUnlinked`, `ToolStarted`, `ToolFinished`, `HypothesisCreated`, `DecisionMade`, `ArtifactCreated`, `ProgressUpdated`, `ErrorOccurred`, `CorrectionMade`, and `UserFeedbackReceived`.
+`ContextStarted`, `MemorySearched`, `MemoryRead`, `MemoryLinked`, `MemoryUnlinked`, `ToolStarted`, `ToolFinished`, `HypothesisCreated`, `DecisionMade`, `ArtifactCreated`, `ProgressUpdated`, `ErrorOccurred`, `CorrectionMade`, `UserFeedbackReceived`, `MemoryConsolidated`, `ReflectionRecorded`, and `ExecutionCompleted`.
 
 ### Memory relationships
 
@@ -169,7 +192,7 @@ Every tool input is documented in its JSON Schema so an LLM can determine what b
 > Text similarity is a discovery hint, not a relationship. Before calling `link_memories`, the agent must read both memories and provide direction, explanation, evidence, and confidence.
 
 > [!NOTE]
-> Reflections are excluded from `search_memory`. They become durable knowledge only when a later execution validates and explicitly consolidates them.
+> Reflections are excluded from `search_memory`. Retrieve them with `search_reflections`; after independent validation, a later execution can consolidate knowledge with `validatedFromReflectionId` provenance.
 
 ## Agent templates
 
@@ -191,7 +214,7 @@ The interface defaults to English and supports Spanish and Portuguese. Dark and 
 
 | Component | Technology | Responsibility |
 | --- | --- | --- |
-| `apps/mcp` | TypeScript, Express, MCP SDK, Zod | Tool schemas, protocol validation, and memory operations |
+| `apps/mcp` | TypeScript, Express, MCP SDK, Zod | Modular database, catalog, session, event, embedding, migration, and protocol services |
 | `apps/web` | HTML, CSS, JavaScript, Nginx, 3D Force Graph | Human-readable and interactive exploration |
 | `docker/postgres` | PostgreSQL 17, pgGraph 1.2.0, pgvector 0.8.6, pg_cron | Authoritative storage, graph projection, and database jobs |
 | `compose.yaml` | Docker Compose | One local application network and reproducible startup |
@@ -199,7 +222,7 @@ The interface defaults to English and supports Spanish and Portuguese. Dark and 
 ```text
 linearmemory/
 ├── apps/
-│   ├── mcp/                 # MCP server and memory protocol
+│   ├── mcp/                 # MCP server, services, migrations, and tests
 │   └── web/                 # Agentic Knowledge Explorer
 ├── docker/
 │   ├── compose/             # Application and database services
@@ -227,12 +250,15 @@ docker compose exec postgres psql -U linearmemory -d linearmemory \
   -c "SELECT * FROM graph.status();"
 ```
 
-Type-check the MCP server from a development environment:
+Type-check and test the MCP server from a development environment with PostgreSQL running:
 
 ```bash
 cd apps/mcp
 npm ci
 npm run typecheck
+npm run build
+npm run migrate:dev
+npm test
 ```
 
 Useful Make targets are also available:
@@ -247,7 +273,7 @@ make down
 
 ## Resetting local data
 
-PostgreSQL initialization scripts run only when the database volume is created. To erase all local LinearMemory data and rebuild the stack:
+Schema migrations run automatically whenever the MCP container starts. To intentionally erase all local LinearMemory data and rebuild the stack:
 
 ```bash
 docker compose down -v --remove-orphans
@@ -256,6 +282,10 @@ docker compose up --build -d
 
 > [!CAUTION]
 > This permanently removes the local `linearmemory-postgres-data` volume and every stored domain, workspace, execution, event, memory, and relationship.
+
+## Security model
+
+LinearMemory is designed for trusted local development. It does not currently implement user authentication or authorization. Docker ports bind to `127.0.0.1` by default so the web explorer, MCP endpoint, and PostgreSQL are not intentionally exposed to the local network. Do not set `BIND_ADDRESS=0.0.0.0`, publish the services through a proxy, or deploy them on a shared network without adding authentication, TLS, network policy, and database access controls.
 
 ## Contributing
 

@@ -11,5 +11,3 @@ networks:
 secrets:
   postgres-password:
     file: ./.secrets/postgres_password
-  postgres-pgpass:
-    file: ./.secrets/postgres_pgpass

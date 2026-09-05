@@ -60,13 +60,34 @@ jobs:
         working-directory: apps/mcp
         run: npm run typecheck
 
+      - name: Compile production server
+        working-directory: apps/mcp
+        run: npm run build
+
       - name: Validate Docker Compose configuration
         shell: bash
         run: |
           mkdir -p .secrets
           printf '%s' 'workflow-validation-only' > .secrets/postgres_password
-          printf '%s' 'postgres:5432:linearmemory:linearmemory:workflow-validation-only' > .secrets/postgres_pgpass
           docker compose config --quiet
+
+      - name: Run database integration tests
+        shell: bash
+        env:
+          ALLOW_DATABASE_RESTORE_TESTS: 1
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGDATABASE: linearmemory
+          PGUSER: linearmemory
+          PGPASSWORD: workflow-validation-only
+        run: |
+          docker compose up -d --wait postgres
+          npm --prefix apps/mcp run migrate:dev
+          npm --prefix apps/mcp test
+
+      - name: Stop integration services
+        if: always()
+        run: docker compose down -v --remove-orphans
 
   build:
     name: Build ${{ matrix.image }} image
