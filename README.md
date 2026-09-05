@@ -15,6 +15,7 @@
   </p>
 
   <p>
+    <a href="https://www.producthunt.com/products/linearmemory-ai-memory-explorer?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-linearmemory-ai-memory-explorer" target="_blank" rel="noopener noreferrer"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=linearmemory-ai-memory-explorer&amp;theme=light" alt="LinearMemory - Agentic Knowledge Explorer | Product Hunt" width="250" height="54" /></a>
     <a href="https://trendshift.io/repositories/213782?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-213782" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/213782" alt="jucelioalencar%2Flinearmemory | Trendshift" width="250" height="55" /></a>
   </p>
 </div>
