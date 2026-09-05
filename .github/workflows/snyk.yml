@@ -1,0 +1,59 @@
+name: Snyk security
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  open-source:
+    name: Scan MCP dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/mcp/package-lock.json
+
+      - name: Install MCP dependencies
+        working-directory: apps/mcp
+        run: npm ci --ignore-scripts
+
+      - name: Verify Snyk token
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "SNYK_TOKEN is not configured in this repository." >&2
+            exit 1
+          fi
+
+      - name: Test MCP dependencies with Snyk
+        uses: snyk/actions/node@12140f4059e244892ae643824a95459a102120dd
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --file=apps/mcp/package.json --package-manager=npm --severity-threshold=high
+
+      - name: Update the monitored Snyk project
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: snyk/actions/node@12140f4059e244892ae643824a95459a102120dd
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          args: --file=apps/mcp/package.json --package-manager=npm --project-name=linearmemory-mcp --target-reference=main
