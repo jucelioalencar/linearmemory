@@ -1,4 +1,4 @@
-FROM node:24.19.0-trixie-slim AS build
+FROM node:24.19.0-alpine3.24 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:24.19.0-trixie-slim
+FROM node:24.19.0-alpine3.24
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
