@@ -13,6 +13,10 @@
     <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
     <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white">
   </p>
+
+  <p>
+    <a href="https://trendshift.io/repositories/213782" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/repositories/213782/opengraph-image-ueey3p?8ff962be29437082" alt="jucelioalencar/linearmemory on Trendshift" width="720" /></a>
+  </p>
 </div>
 
 ## LinearMemory in action
