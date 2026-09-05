@@ -266,6 +266,25 @@ npm run migrate:dev
 npm test
 ```
 
+### Performance telemetry
+
+Every MCP tool call emits one structured JSON performance log with the operation, category, duration, HTTP status, timestamp, and slow-request flag. `search_memory` also reports separate embedding, database, and total durations so local-model startup can be distinguished from database latency.
+
+View the retained in-memory percentiles at:
+
+```text
+GET http://localhost:3333/api/performance
+```
+
+Run the non-destructive MCP benchmark against the workspace with the most active memories. It measures 50 event ingestions and 30 searches, then removes its temporary execution:
+
+```bash
+cd apps/mcp
+npm run benchmark:performance -- --event-iterations=50 --search-iterations=30
+```
+
+Use `PERFORMANCE_SLOW_REQUEST_MS` to configure the warning threshold, `PERFORMANCE_LOG_CAPACITY` to configure retained samples, and `EMBEDDING_CACHE_SIZE` to configure the in-process semantic-query cache.
+
 Useful Make targets are also available:
 
 ```bash

@@ -48,6 +48,9 @@ type EmbeddingState = {
 };
 
 let backfillRunning = false;
+const embeddingCache = new Map<string, number[]>();
+const embeddingCacheSize = Math.max(0, Number.parseInt(process.env.EMBEDDING_CACHE_SIZE ?? '256', 10));
+let settingsCache: { value: ResolvedEmbeddingSettings; expiresAt: number } | null = null;
 let localInstallState: { model: string; status: 'idle' | 'downloading' | 'ready' | 'error'; message?: string } = {
   model: '',
   status: 'idle'
@@ -106,16 +109,19 @@ async function readStoredSettings(): Promise<StoredEmbeddingSettings> {
 }
 
 async function resolveSettings(): Promise<ResolvedEmbeddingSettings> {
+  if (settingsCache && settingsCache.expiresAt > Date.now()) return settingsCache.value;
   const stored = await readStoredSettings();
   const provider = providers.some(item => item.id === stored.provider) ? stored.provider! : 'openai';
   const definition = providerDefinition(provider);
-  return {
+  const resolved = {
     enabled: stored.enabled === true,
     provider,
     endpoint: stored.endpoint?.trim() || process.env.EMBEDDING_ENDPOINT?.trim() || definition.endpoint,
     model: stored.model?.trim() || process.env.EMBEDDING_MODEL?.trim() || definition.model,
     apiKey: decryptCredential(stored.encryptedApiKey) || process.env.EMBEDDING_API_KEY?.trim() || ''
   };
+  settingsCache = { value: resolved, expiresAt: Date.now() + 5_000 };
+  return resolved;
 }
 
 export async function getEmbeddingState(): Promise<EmbeddingState> {
@@ -181,6 +187,8 @@ export async function saveEmbeddingSettings(input: {
      ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,
     [JSON.stringify(value)]
   );
+  settingsCache = null;
+  embeddingCache.clear();
   if (input.enabled) void backfillMissingEmbeddings();
   return getEmbeddingState();
 }
@@ -189,6 +197,13 @@ export async function createEmbedding(text: string): Promise<number[] | null> {
   const settings = await resolveSettings();
   const definition = providerDefinition(settings.provider);
   if (!settings.enabled || !settings.endpoint || (definition.credentialRequired && !settings.apiKey)) return null;
+  const cacheKey = createHash('sha256').update(`${settings.provider}\0${settings.endpoint}\0${settings.model}\0${text}`).digest('base64url');
+  const cached = embeddingCache.get(cacheKey);
+  if (cached) {
+    embeddingCache.delete(cacheKey);
+    embeddingCache.set(cacheKey, cached);
+    return cached;
+  }
   try {
     const isOllama = settings.provider === 'ollama';
     const response = await fetch(settings.endpoint, {
@@ -211,6 +226,14 @@ export async function createEmbedding(text: string): Promise<number[] | null> {
     const embedding = isOllama ? payload.embeddings?.[0] : payload.data?.[0]?.embedding;
     if (!Array.isArray(embedding) || embedding.length !== EMBEDDING_DIMENSIONS || embedding.some(value => !Number.isFinite(value))) {
       throw new Error(`Embedding provider must return exactly ${EMBEDDING_DIMENSIONS} finite values.`);
+    }
+    if (embeddingCacheSize > 0) {
+      embeddingCache.set(cacheKey, embedding);
+      while (embeddingCache.size > embeddingCacheSize) {
+        const oldest = embeddingCache.keys().next().value;
+        if (oldest === undefined) break;
+        embeddingCache.delete(oldest);
+      }
     }
     return embedding;
   } catch (error) {

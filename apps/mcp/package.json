@@ -9,6 +9,7 @@
     "migrate:dev": "tsx src/migrate.ts",
     "start": "node dist/index.js",
     "start:dev": "tsx src/index.ts",
+    "benchmark:performance": "node scripts/benchmark-mcp.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test --test-concurrency=1 test/**/*.test.ts"
   },

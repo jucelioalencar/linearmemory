@@ -8,6 +8,7 @@ import { createEmbedding, registerEmbeddingSettingsRoutes, vectorParameter } fro
 import { createDomain, createWorkspace, updateDomain, updateWorkspace } from './catalog.js';
 import { createOrReuseSession, finishSessionIfIdle } from './sessions.js';
 import { registerBackupRoutes } from './backup.js';
+import { performanceMiddleware, performanceSummary, recordPerformance } from './performance.js';
 
 const memoryRelationTypes = [
   'supports', 'depends_on', 'caused', 'contradicts', 'refines', 'implements',
@@ -227,22 +228,24 @@ function createServer(): McpServer {
       })
     },
     async ({ executionId, query, scope, memoryTypes, limit }) => {
+      const searchStartedAt = performance.now();
+      const embeddingStartedAt = performance.now();
       const queryEmbedding = await createEmbedding(query);
+      const embeddingDurationMs = performance.now() - embeddingStartedAt;
       const queryVector = vectorParameter(queryEmbedding);
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
         const execution = await client.query<{ workspace_id: string; domain_id: string; language: string }>('SELECT workspace_id, domain_id, language FROM memory.executions WHERE id=$1 AND status=\'active\'', [executionId]);
         if (!execution.rows[0]) throw new Error('Active execution not found. Call begin_context first.');
-        const language = execution.rows[0].language.toLowerCase();
-        const searchConfiguration = language.startsWith('pt') ? 'portuguese' : language.startsWith('es') ? 'spanish' : 'english';
+        await client.query(`SET LOCAL pg_trgm.similarity_threshold = '0.15'`);
+        const databaseStartedAt = performance.now();
         const memories = await client.query(
           `WITH candidates AS (
              SELECT n.id,n.node_type,n.title,n.summary,n.content,n.confidence,n.importance,n.created_at,
                     w.id AS workspace_id,w.workspace_key,COALESCE(a.agent_key,'agent_default') AS agent_id,
-                    ts_rank_cd(to_tsvector($8::regconfig,unaccent(n.title || ' ' || n.summary)),
-                               plainto_tsquery($8::regconfig,unaccent($2)))
-                      + similarity(unaccent(n.title || ' ' || n.summary),unaccent($2)) AS lexical_relevance,
+                    ts_rank_cd(n.search_document,plainto_tsquery('simple', $2))
+                      + similarity(lower(n.title),lower($2)) AS lexical_relevance,
                     CASE WHEN $7::vector IS NULL OR n.embedding IS NULL THEN 0
                          ELSE GREATEST(0,1-(n.embedding <=> $7::vector)) END AS semantic_relevance
                FROM memory.memory_nodes n
@@ -252,14 +255,18 @@ function createServer(): McpServer {
               WHERE n.status='active'
                 AND (($3='Workspace' AND w.id=$1) OR ($3='Domain' AND w.domain_id=$4))
                 AND (cardinality($5::text[])=0 OR n.node_type=ANY($5::text[]))
+                AND (n.search_document @@ plainto_tsquery('simple', $2)
+                     OR lower(n.title) % lower($2)
+                     OR ($7::vector IS NOT NULL AND n.embedding IS NOT NULL))
            )
            SELECT *,CASE WHEN $7::vector IS NULL THEN lexical_relevance
                          ELSE (.55*LEAST(1,lexical_relevance))+(.45*semantic_relevance) END AS relevance
              FROM candidates
             WHERE lexical_relevance > .08 OR ($7::vector IS NOT NULL AND semantic_relevance > .35)
             ORDER BY relevance DESC,importance DESC,created_at DESC LIMIT $6`,
-          [execution.rows[0].workspace_id, query, scope, execution.rows[0].domain_id, memoryTypes, limit, queryVector, searchConfiguration]
+          [execution.rows[0].workspace_id, query, scope, execution.rows[0].domain_id, memoryTypes, limit, queryVector]
         );
+        const databaseDurationMs = performance.now() - databaseStartedAt;
         const event = await addProtocolEvent(client, executionId, 'MemorySearched', 'Durable memory searched', query, 'Memory', {
           scope,
           resultCount: memories.rowCount ?? 0,
@@ -275,6 +282,27 @@ function createServer(): McpServer {
           }))
         });
         await client.query('COMMIT');
+        recordPerformance({
+          operation: 'search_memory.database',
+          category: 'query',
+          durationMs: Number(databaseDurationMs.toFixed(2)),
+          statusCode: 200,
+          timestamp: new Date().toISOString()
+        });
+        recordPerformance({
+          operation: 'search_memory.embedding',
+          category: 'query',
+          durationMs: Number(embeddingDurationMs.toFixed(2)),
+          statusCode: 200,
+          timestamp: new Date().toISOString()
+        });
+        recordPerformance({
+          operation: 'search_memory.total',
+          category: 'query',
+          durationMs: Number((performance.now() - searchStartedAt).toFixed(2)),
+          statusCode: 200,
+          timestamp: new Date().toISOString()
+        });
         return jsonResult({ results: memories.rows, searchEvent: event, instruction: 'For each result that affects the work, call add_execution_event with eventType MemoryRead and include memoryId in metadata.' });
       } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
     }
@@ -702,6 +730,7 @@ const app = createMcpExpressApp({
   allowedHosts: ['localhost', '127.0.0.1', 'mcp'],
   jsonLimit: '100mb'
 });
+app.use(performanceMiddleware);
 const nodeHandler = toNodeHandler(handler);
 
 app.get('/health', async (_req, res) => {
@@ -731,6 +760,52 @@ app.get('/api/live', (_req, res) => {
     unsubscribe();
     res.end();
   });
+});
+
+app.get('/api/performance', (_req, res) => res.json(performanceSummary()));
+
+app.get('/api/search-results/:eventId', async (req, res) => {
+  try {
+    const event = await pool.query(
+      `SELECT pe.description,pe.metadata,x.language,w.id AS workspace_id,w.domain_id
+         FROM memory.execution_events pe
+         JOIN memory.executions x ON x.id=pe.execution_id
+         JOIN memory.workspaces w ON w.id=x.workspace_id
+        WHERE pe.id=$1 AND pe.event_type='MemorySearched'`,
+      [req.params.eventId]
+    );
+    if (!event.rows[0]) return res.status(404).json({ error: 'Memory search event not found.' });
+    const source = event.rows[0];
+    const count = Math.min(50, Math.max(0, Number(source.metadata?.resultCount ?? 0)));
+    if (!count) return res.json({ results: [] });
+    await pool.query(`SET pg_trgm.similarity_threshold = '0.15'`);
+    const results = await pool.query(
+      `SELECT n.id,n.title,n.summary,
+              ts_rank_cd(n.search_document,plainto_tsquery('simple',$1))
+                + similarity(lower(n.title),lower($1)) AS relevance
+         FROM memory.memory_nodes n
+         JOIN memory.workspaces w ON w.id=n.workspace_id
+        WHERE n.status='active'
+          AND (($2='Domain' AND w.domain_id=$4) OR ($2<>'Domain' AND w.id=$3))
+          AND (n.search_document @@ plainto_tsquery('simple',$1) OR lower(n.title) % lower($1))
+        ORDER BY relevance DESC,n.importance DESC,n.created_at DESC LIMIT $5`,
+      [source.description, source.metadata?.scope ?? 'Workspace', source.workspace_id, source.domain_id, count]
+    );
+    res.json({
+      results: results.rows.map(memory => ({
+        id: memory.id,
+        title: memory.title,
+        summary: memory.summary,
+        lexicalRelevance: Number(memory.relevance ?? 0),
+        semanticRelevance: 0,
+        relevance: Number(memory.relevance ?? 0)
+      })),
+      reconstructed: true
+    });
+  } catch (error) {
+    console.error('Historical search reconstruction failed', error);
+    res.status(500).json({ error: 'Unable to reconstruct historical search results.' });
+  }
 });
 
 app.get('/api/explorer', async (req, res) => {
@@ -874,50 +949,7 @@ app.get('/api/explorer', async (req, res) => {
       )
     ]);
 
-    const enrichedProtocolEvents = await Promise.all(protocolEvents.rows.map(async event => {
-      const metadata = event.metadata ?? {};
-      const resultCount = Number(metadata.resultCount ?? 0);
-      const hasStoredResults = Array.isArray(metadata.resultMemoryIds) && metadata.resultMemoryIds.length > 0;
-      if (event.event_type !== 'MemorySearched' || resultCount < 1 || hasStoredResults || !event.description) return event;
-
-      const searchConfiguration = String(event.language ?? 'en').toLowerCase().startsWith('pt')
-        ? 'portuguese'
-        : String(event.language ?? 'en').toLowerCase().startsWith('es') ? 'spanish' : 'english';
-      const reconstructed = await pool.query(
-        `WITH candidates AS (
-           SELECT n.id,n.title,n.summary,
-                  ts_rank_cd(to_tsvector($6::regconfig,unaccent(n.title || ' ' || n.summary)),
-                             plainto_tsquery($6::regconfig,unaccent($1)))
-                    + similarity(unaccent(n.title || ' ' || n.summary),unaccent($1)) AS relevance
-             FROM memory.memory_nodes n
-             JOIN memory.workspaces w ON w.id=n.workspace_id
-             LEFT JOIN memory.knowledge_domains d ON d.id=w.domain_id
-            WHERE n.status='active'
-              AND (($2='Domain' AND d.domain_key=$4) OR ($2<>'Domain' AND w.workspace_key=$3))
-         )
-         SELECT id,title,summary,relevance
-           FROM candidates
-          ORDER BY relevance DESC,id
-          LIMIT $5`,
-        [event.description, metadata.scope ?? 'Workspace', event.workspace_key, event.domain_key, resultCount, searchConfiguration]
-      );
-      return {
-        ...event,
-        metadata: {
-          ...metadata,
-          resultMemoryIds: reconstructed.rows.map(memory => memory.id),
-          results: reconstructed.rows.map(memory => ({
-            id: memory.id,
-            title: memory.title,
-            summary: memory.summary,
-            lexicalRelevance: Number(memory.relevance ?? 0),
-            semanticRelevance: 0,
-            relevance: Number(memory.relevance ?? 0)
-          })),
-          resultsReconstructed: true
-        }
-      };
-    }));
+    const enrichedProtocolEvents = protocolEvents.rows;
 
     const normalizedProtocolEvents = enrichedProtocolEvents.map(event => ({
       id: `protocol:${event.id}`,
