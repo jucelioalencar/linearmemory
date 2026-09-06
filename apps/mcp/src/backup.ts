@@ -102,12 +102,16 @@ async function importTable(client: PoolClient, table: TableName, data: TableBack
   if (data.columns.some(column => !isSafeSqlIdentifier(column))) {
     throw new Error(`Backup table ${table} contains invalid column identifiers.`);
   }
-  const columns = data.columns.map(quoteIdentifier).join(',');
-  const placeholders = data.columns.map((_, index) => `$${index + 1}`).join(',');
+  const trustedColumns = currentColumns.rows
+    .map(row => row.column_name)
+    .filter(column => data.columns.includes(column));
+  if (!trustedColumns.length) return;
+  const columns = trustedColumns.map(quoteIdentifier).join(',');
+  const placeholders = trustedColumns.map((_, index) => `$${index + 1}`).join(',');
   const identityOverride = table === 'memory_events' ? ' OVERRIDING SYSTEM VALUE' : '';
   const sql = `INSERT INTO memory.${quoteIdentifier(table)} (${columns})${identityOverride} VALUES (${placeholders})`;
   for (const [rowIndex, row] of data.rows.entries()) {
-    const values = data.columns.map(column => serializeImportValue(row[column], dataTypes.get(column)));
+    const values = trustedColumns.map(column => serializeImportValue(row[column], dataTypes.get(column)));
     try {
       await client.query(sql, values);
     } catch (error) {
