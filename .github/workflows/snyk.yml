@@ -15,6 +15,7 @@ permissions:
   security-events: write
 
 env:
+  SNYK_ORG: jucelioalencar
   SNYK_REPORT_URL: https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json
 
 jobs:
@@ -44,7 +45,7 @@ jobs:
         id: dependency-scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-open-source.sarif
+        run: snyk test --org="$SNYK_ORG" --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-open-source.sarif
 
       - name: Upload dependency findings to GitHub Security
         if: always() && hashFiles('snyk-open-source.sarif') != ''
@@ -70,7 +71,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.dependency-scan.outcome == 'success'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk monitor --all-projects --dev --project-name-prefix=linearmemory- --target-reference=main
+        run: snyk monitor --org="$SNYK_ORG" --all-projects --dev --project-name-prefix=linearmemory- --target-reference=main
 
   source-code:
     name: Scan source code
@@ -87,7 +88,21 @@ jobs:
         id: code-scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
+        shell: bash
+        run: |
+          set +e
+          snyk code test --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk-code.sarif 2>&1 | tee snyk-code.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -eq 2 ] && grep -q 'SNYK-CODE-0005' snyk-code.log; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Snyk Code is not enabled for ${SNYK_ORG}; source scanning was skipped."
+            exit 0
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          exit "$status"
 
       - name: Upload source findings to GitHub Security
         if: always() && hashFiles('snyk-code.sarif') != ''
@@ -103,7 +118,7 @@ jobs:
           {
             echo "### Snyk Code"
             echo ""
-            echo "- Result: **${{ steps.code-scan.outcome }}**"
+            echo "- Result: **${{ steps.code-scan.outputs.available == 'false' && 'skipped (not enabled)' || steps.code-scan.outcome }}**"
             echo "- Scope: supported JavaScript and TypeScript source files"
             echo "- Security gate: high and critical findings"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -144,6 +159,7 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: >-
           snyk container test "${{ matrix.image }}"
+          --org="$SNYK_ORG"
           --file="${{ matrix.dockerfile }}"
           --severity-threshold=high
           --sarif-file-output="snyk-container-${{ matrix.service }}.sarif"
@@ -174,6 +190,7 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: >-
           snyk container monitor "${{ matrix.image }}"
+          --org="$SNYK_ORG"
           --file="${{ matrix.dockerfile }}"
           --project-name="linearmemory-${{ matrix.service }}"
           --target-reference=main
