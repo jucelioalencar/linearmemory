@@ -19,6 +19,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       short_sha: ${{ steps.version.outputs.short_sha }}
       registry: ${{ steps.version.outputs.registry }}
+      docker_repository: ${{ steps.version.outputs.docker_repository }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -32,11 +33,13 @@ jobs:
           VERSION="${VERSION_PREFIX}.${GITHUB_RUN_NUMBER}"
           SHORT_SHA="${GITHUB_SHA::7}"
           REGISTRY="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          DOCKER_REPOSITORY="${GITHUB_REPOSITORY_OWNER,,}/linearmemory"
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
+          echo "docker_repository=${DOCKER_REPOSITORY}" >> "$GITHUB_OUTPUT"
 
   validate:
     name: Validate MCP server
@@ -89,6 +92,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +111,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -116,16 +124,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
       - name: Build and publish image
+        id: publish
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ needs.prepare.outputs.registry }}/linearmemory-${{ matrix.image }}:latest
             ${{ needs.prepare.outputs.registry }}/linearmemory-${{ matrix.image }}:${{ needs.prepare.outputs.version }}
             ${{ needs.prepare.outputs.registry }}/linearmemory-${{ matrix.image }}:sha-${{ needs.prepare.outputs.short_sha }}
+            ${{ needs.prepare.outputs.docker_repository }}:${{ matrix.image }}-latest
+            ${{ needs.prepare.outputs.docker_repository }}:${{ matrix.image }}-${{ needs.prepare.outputs.version }}
+            ${{ needs.prepare.outputs.docker_repository }}:${{ matrix.image }}-sha-${{ needs.prepare.outputs.short_sha }}
           labels: |
             org.opencontainers.image.title=LinearMemory ${{ matrix.image }}
             org.opencontainers.image.description=LinearMemory ${{ matrix.image }} service
@@ -136,6 +155,19 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           provenance: mode=max
           sbom: true
+
+      - name: Summarize published image
+        shell: bash
+        run: |
+          {
+            echo "### Published ${{ matrix.image }} image"
+            echo ""
+            echo "- Docker Hub: \`${{ needs.prepare.outputs.docker_repository }}:${{ matrix.image }}-${{ needs.prepare.outputs.version }}\`"
+            echo "- GHCR: \`${{ needs.prepare.outputs.registry }}/linearmemory-${{ matrix.image }}:${{ needs.prepare.outputs.version }}\`"
+            echo "- Digest: \`${{ steps.publish.outputs.digest }}\`"
+            echo "- Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo "- Attestations: SLSA provenance (max) and SPDX SBOM"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Create GitHub release
@@ -150,6 +182,7 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       REGISTRY: ${{ needs.prepare.outputs.registry }}
+      DOCKER_REPOSITORY: ${{ needs.prepare.outputs.docker_repository }}
       SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
     steps:
       - name: Check out repository
@@ -168,6 +201,11 @@ jobs:
           ${REGISTRY}/linearmemory-mcp:${RELEASE_VERSION}
           ${REGISTRY}/linearmemory-web:${RELEASE_VERSION}
           ${REGISTRY}/linearmemory-postgres:${RELEASE_VERSION}
+
+          Docker Hub images:
+          ${DOCKER_REPOSITORY}:mcp-${RELEASE_VERSION}
+          ${DOCKER_REPOSITORY}:web-${RELEASE_VERSION}
+          ${DOCKER_REPOSITORY}:postgres-${RELEASE_VERSION}
 
           Immutable commit tags:
           ${REGISTRY}/linearmemory-mcp:sha-${SHORT_SHA}
@@ -189,7 +227,7 @@ jobs:
 
           ## Container images
 
-          This release publishes the MCP server, web explorer, and PostgreSQL images to GitHub Container Registry. See `release-manifest.txt` for versioned and immutable image tags.
+          This release publishes the MCP server, web explorer, and PostgreSQL images to GitHub Container Registry and Docker Hub. Every image includes max-level SLSA provenance and an SPDX SBOM attestation. See `release-manifest.txt` for versioned and immutable image tags.
           EOF
 
       - name: Create or update release
