@@ -16,23 +16,11 @@
 
   <p>
     <a href="https://trendshift.io/repositories/213782?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-213782" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/Track_on-Trendshift-2563EB?style=for-the-badge" alt="Track LinearMemory on Trendshift" height="28" /></a>
- 
-[![Known Vulnerabilities](https://snyk.io/test/github/jucelioalencar/linearmemory/badge.svg?targetFile=apps/mcp/package.json)](https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json)
-<a href="https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json">
-  <img alt="Snyk Vulnerabilities" src="https://snyk.io/test/github/jucelioalencar/linearmemory/badge.svg?targetFile=apps/mcp/package.json">
-</a>
+  </p>
+</div>
+
 [![Known Vulnerabilities](https://snyk.io/test/github/jucelioalencar/linearmemory/badge.svg?targetFile=apps/mcp/package.json)](https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json)
 
-<a href="https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json">
-  <img
-    alt="Snyk Security"
-    src="https://img.shields.io/badge/Security-Snyk%20Monitored-4C4A73?logo=snyk&logoColor=white">
-</a>
-<a href="https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json">
-  <img
-    alt="Snyk Security"
-    src="https://img.shields.io/badge/Snyk-Security%20Scan-4C4A73?logo=snyk&logoColor=white">
-</a>
 ## LinearMemory in action
 
 Explore agent histories, consolidated knowledge, execution replays, and cross-agent relationships in the interactive web interface.
@@ -310,6 +298,8 @@ npm run test:integration
 ```
 
 Set `TESTCONTAINERS_POSTGRES_IMAGE` to use an image that is already built instead of building the PostgreSQL Dockerfile. Pull requests run the same isolated suite in GitHub Actions. Coverage gates require at least 75% lines, 60% branches, and 70% functions.
+
+MCP dependencies are also checked by Snyk on pull requests and pushes. High- and critical-severity findings fail the security job. See the current [Snyk dependency report](https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json).
 
 Useful Make targets are also available:
 
