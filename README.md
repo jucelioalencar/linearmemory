@@ -7,6 +7,7 @@
   <p>
     <a href="https://github.com/jucelioalencar/linearmemory/actions/workflows/release.yml"><img alt="Build and release" src="https://github.com/jucelioalencar/linearmemory/actions/workflows/release.yml/badge.svg?branch=main"></a>
     <a href="https://github.com/jucelioalencar/linearmemory/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/jucelioalencar/linearmemory"></a>
+    <a href="https://hub.docker.com/r/jucelioalencar/linearmemory"><img alt="Docker pulls" src="https://img.shields.io/docker/pulls/jucelioalencar/linearmemory?logo=docker&label=Docker%20Pulls"></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-7cdd87.svg"></a>
     <img alt="MCP" src="https://img.shields.io/badge/MCP-Streamable_HTTP-7c3aed">
     <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white">
@@ -81,7 +82,7 @@ LinearMemory separates four kinds of information:
 | Research workflows | Traceable hypotheses, sources, conclusions, and links between related findings. |
 | Agent evaluation | Observable execution timelines without storing private chain-of-thought. |
 
-## Quick start
+## Quick start with Docker Hub
 
 ### Prerequisites
 
@@ -98,8 +99,9 @@ Set-Location linearmemory
 New-Item -ItemType Directory -Force .secrets | Out-Null
 'replace-with-a-local-password' | Set-Content -NoNewline .secrets/postgres_password
 
-docker compose config
-docker compose up --build -d
+docker compose -f compose.yaml -f compose.dockerhub.yaml config
+docker compose -f compose.yaml -f compose.dockerhub.yaml pull
+docker compose -f compose.yaml -f compose.dockerhub.yaml up --no-build -d
 ```
 
 ### Linux and macOS
@@ -111,7 +113,24 @@ cd linearmemory
 mkdir -p .secrets
 printf '%s' 'replace-with-a-local-password' > .secrets/postgres_password
 
-docker compose config
+docker compose -f compose.yaml -f compose.dockerhub.yaml config
+docker compose -f compose.yaml -f compose.dockerhub.yaml pull
+docker compose -f compose.yaml -f compose.dockerhub.yaml up --no-build -d
+```
+
+This installation pulls the prebuilt `mcp-latest`, `web-latest`, and `postgres-latest` images from [Docker Hub](https://hub.docker.com/r/jucelioalencar/linearmemory). Images are published for `linux/amd64` and `linux/arm64` with max-level SLSA provenance and an SPDX SBOM attestation.
+
+To pin every service to a released version, set `LINEARMEMORY_DOCKER_TAG` before running Compose. Do not include the service prefix in this value:
+
+```powershell
+$env:LINEARMEMORY_DOCKER_TAG = '0.2.43'
+docker compose -f compose.yaml -f compose.dockerhub.yaml pull
+docker compose -f compose.yaml -f compose.dockerhub.yaml up --no-build -d
+```
+
+To build the images from the checked-out source instead, use:
+
+```bash
 docker compose up --build -d
 ```
 
