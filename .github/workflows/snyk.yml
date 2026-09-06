@@ -12,10 +12,16 @@ on:
 
 permissions:
   contents: read
+  security-events: write
+
+env:
+  SNYK_ORG: jucelioalencar
+  SNYK_REPORT_URL: https://snyk.io/test/github/jucelioalencar/linearmemory?targetFile=apps/mcp/package.json
 
 jobs:
   open-source:
-    name: Scan MCP dependencies
+    name: Scan all dependencies
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -32,28 +38,165 @@ jobs:
         working-directory: apps/mcp
         run: npm ci --ignore-scripts
 
-      - name: Verify Snyk token
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@12140f4059e244892ae643824a95459a102120dd
+
+      - name: Test all dependency manifests
+        id: dependency-scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --org="$SNYK_ORG" --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-open-source.sarif
+
+      - name: Upload dependency findings to GitHub Security
+        if: always() && hashFiles('snyk-open-source.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-open-source.sarif
+          category: snyk-open-source
+
+      - name: Summarize dependency scan
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Snyk Open Source"
+            echo ""
+            echo "- Result: **${{ steps.dependency-scan.outcome }}**"
+            echo "- Scope: every supported dependency manifest, including development dependencies"
+            echo "- Security gate: high and critical findings"
+            echo "- [View the MCP dependency report](${SNYK_REPORT_URL})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update monitored dependency projects
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.dependency-scan.outcome == 'success'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk monitor --org="$SNYK_ORG" --all-projects --dev --project-name-prefix=linearmemory- --target-reference=main
+
+  source-code:
+    name: Scan source code
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@12140f4059e244892ae643824a95459a102120dd
+
+      - name: Analyze supported source files
+        id: code-scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         shell: bash
         run: |
-          if [ -z "$SNYK_TOKEN" ]; then
-            echo "SNYK_TOKEN is not configured in this repository." >&2
-            exit 1
+          set +e
+          snyk code test --org="$SNYK_ORG" --severity-threshold=high --sarif-file-output=snyk-code.sarif 2>&1 | tee snyk-code.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -eq 2 ] && grep -q 'SNYK-CODE-0005' snyk-code.log; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Snyk Code is not enabled for ${SNYK_ORG}; source scanning was skipped."
+            exit 0
           fi
 
-      - name: Test MCP dependencies with Snyk
-        uses: snyk/actions/node@12140f4059e244892ae643824a95459a102120dd
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --file=apps/mcp/package.json --package-manager=npm --severity-threshold=high
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          exit "$status"
 
-      - name: Update the monitored Snyk project
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: snyk/actions/node@12140f4059e244892ae643824a95459a102120dd
+      - name: Upload source findings to GitHub Security
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code
+
+      - name: Summarize source scan
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Snyk Code"
+            echo ""
+            echo "- Result: **${{ steps.code-scan.outputs.available == 'false' && 'skipped (not enabled)' || steps.code-scan.outcome }}**"
+            echo "- Scope: supported JavaScript and TypeScript source files"
+            echo "- Security gate: high and critical findings"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  containers:
+    name: Scan ${{ matrix.service }} container
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: mcp
+            image: linearmemory/mcp:snyk
+            context: ./apps/mcp
+            dockerfile: ./apps/mcp/Dockerfile
+            scanArgs: ""
+          - service: web
+            image: linearmemory/web:snyk
+            context: ./apps/web
+            dockerfile: ./apps/web/Dockerfile
+            scanArgs: ""
+          - service: postgres
+            image: linearmemory/postgres:snyk
+            context: .
+            dockerfile: ./docker/postgres/Dockerfile
+            scanArgs: --exclude-base-image-vulns
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.service }} image
+        run: docker build --tag "${{ matrix.image }}" --file "${{ matrix.dockerfile }}" "${{ matrix.context }}"
+
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@12140f4059e244892ae643824a95459a102120dd
+
+      - name: Test ${{ matrix.service }} image
+        id: container-scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: >-
+          snyk container test "${{ matrix.image }}"
+          --org="$SNYK_ORG"
+          --file="${{ matrix.dockerfile }}"
+          --severity-threshold=high
+          ${{ matrix.scanArgs }}
+          --sarif-file-output="snyk-container-${{ matrix.service }}.sarif"
+
+      - name: Upload container findings to GitHub Security
+        if: always() && hashFiles(format('snyk-container-{0}.sarif', matrix.service)) != ''
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          command: monitor
-          args: --file=apps/mcp/package.json --package-manager=npm --project-name=linearmemory-mcp --target-reference=main
+          sarif_file: snyk-container-${{ matrix.service }}.sarif
+          category: snyk-container-${{ matrix.service }}
+
+      - name: Summarize container scan
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Snyk Container · ${{ matrix.service }}"
+            echo ""
+            echo "- Result: **${{ steps.container-scan.outcome }}**"
+            echo "- Image: \`${{ matrix.image }}\`"
+            echo "- Dockerfile: \`${{ matrix.dockerfile }}\`"
+            echo "- Security gate: high and critical findings"
+            echo "- Base-image policy: ${{ matrix.scanArgs || 'included' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update monitored container project
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.container-scan.outcome == 'success'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: >-
+          snyk container monitor "${{ matrix.image }}"
+          --org="$SNYK_ORG"
+          --file="${{ matrix.dockerfile }}"
+          ${{ matrix.scanArgs }}
+          --project-name="linearmemory-${{ matrix.service }}"
+          --target-reference=main
