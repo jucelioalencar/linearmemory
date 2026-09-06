@@ -33,6 +33,10 @@ function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
+function isSafeSqlIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
 async function exportTable(client: PoolClient, table: TableName): Promise<TableBackup> {
   const columns = await client.query<{ column_name: string }>(
     `SELECT column_name
@@ -95,12 +99,19 @@ async function importTable(client: PoolClient, table: TableName, data: TableBack
   const allowed = new Set(currentColumns.rows.map(row => row.column_name));
   const dataTypes = new Map(currentColumns.rows.map(row => [row.column_name, row.data_type]));
   if (data.columns.some(column => !allowed.has(column))) throw new Error(`Backup table ${table} contains unknown columns.`);
-  const columns = data.columns.map(quoteIdentifier).join(',');
-  const placeholders = data.columns.map((_, index) => `$${index + 1}`).join(',');
+  if (data.columns.some(column => !isSafeSqlIdentifier(column))) {
+    throw new Error(`Backup table ${table} contains invalid column identifiers.`);
+  }
+  const trustedColumns = currentColumns.rows
+    .map(row => row.column_name)
+    .filter(column => data.columns.includes(column));
+  if (!trustedColumns.length) return;
+  const columns = trustedColumns.map(quoteIdentifier).join(',');
+  const placeholders = trustedColumns.map((_, index) => `$${index + 1}`).join(',');
   const identityOverride = table === 'memory_events' ? ' OVERRIDING SYSTEM VALUE' : '';
   const sql = `INSERT INTO memory.${quoteIdentifier(table)} (${columns})${identityOverride} VALUES (${placeholders})`;
   for (const [rowIndex, row] of data.rows.entries()) {
-    const values = data.columns.map(column => serializeImportValue(row[column], dataTypes.get(column)));
+    const values = trustedColumns.map(column => serializeImportValue(row[column], dataTypes.get(column)));
     try {
       await client.query(sql, values);
     } catch (error) {
