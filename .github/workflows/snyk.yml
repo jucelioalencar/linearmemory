@@ -145,7 +145,7 @@ jobs:
             image: linearmemory/postgres:snyk
             context: .
             dockerfile: ./docker/postgres/Dockerfile
-            scanArgs: --exclude-base-image-vulns
+            scanArgs: ""
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
