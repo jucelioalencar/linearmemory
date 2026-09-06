@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: jucelioalencar/linearmemory:postgres-${LINEARMEMORY_DOCKER_TAG:-latest}
+
+  mcp:
+    image: jucelioalencar/linearmemory:mcp-${LINEARMEMORY_DOCKER_TAG:-latest}
+
+  web:
+    image: jucelioalencar/linearmemory:web-${LINEARMEMORY_DOCKER_TAG:-latest}
