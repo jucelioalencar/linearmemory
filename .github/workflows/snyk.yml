@@ -145,7 +145,7 @@ jobs:
             image: linearmemory/postgres:snyk
             context: .
             dockerfile: ./docker/postgres/Dockerfile
-            scanArgs: ""
+            scanArgs: "--exclude-base-image-vulns"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -168,6 +168,18 @@ jobs:
           ${{ matrix.scanArgs }}
           --sarif-file-output="snyk-container-${{ matrix.service }}.sarif"
 
+      - name: Report inherited PostgreSQL base-image vulnerabilities
+        if: matrix.service == 'postgres'
+        id: postgres-base-scan
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: >-
+          snyk container test "${{ matrix.image }}"
+          --org="$SNYK_ORG"
+          --file="${{ matrix.dockerfile }}"
+          --severity-threshold=high
+
       - name: Upload container findings to GitHub Security
         if: always() && hashFiles(format('snyk-container-{0}.sarif', matrix.service)) != ''
         uses: github/codeql-action/upload-sarif@v3
@@ -187,6 +199,9 @@ jobs:
             echo "- Dockerfile: \`${{ matrix.dockerfile }}\`"
             echo "- Security gate: high and critical findings"
             echo "- Base-image policy: ${{ matrix.scanArgs || 'included' }}"
+            if [ "${{ matrix.service }}" = "postgres" ]; then
+              echo "- Inherited base-image report: **${{ steps.postgres-base-scan.outcome }}** (informational until Debian publishes fixes)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update monitored container project
