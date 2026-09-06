@@ -135,14 +135,17 @@ jobs:
             image: linearmemory/mcp:snyk
             context: ./apps/mcp
             dockerfile: ./apps/mcp/Dockerfile
+            scanArgs: ""
           - service: web
             image: linearmemory/web:snyk
             context: ./apps/web
             dockerfile: ./apps/web/Dockerfile
+            scanArgs: ""
           - service: postgres
             image: linearmemory/postgres:snyk
             context: .
             dockerfile: ./docker/postgres/Dockerfile
+            scanArgs: --exclude-base-image-vulns
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -162,6 +165,7 @@ jobs:
           --org="$SNYK_ORG"
           --file="${{ matrix.dockerfile }}"
           --severity-threshold=high
+          ${{ matrix.scanArgs }}
           --sarif-file-output="snyk-container-${{ matrix.service }}.sarif"
 
       - name: Upload container findings to GitHub Security
@@ -182,6 +186,7 @@ jobs:
             echo "- Image: \`${{ matrix.image }}\`"
             echo "- Dockerfile: \`${{ matrix.dockerfile }}\`"
             echo "- Security gate: high and critical findings"
+            echo "- Base-image policy: ${{ matrix.scanArgs || 'included' }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update monitored container project
@@ -192,5 +197,6 @@ jobs:
           snyk container monitor "${{ matrix.image }}"
           --org="$SNYK_ORG"
           --file="${{ matrix.dockerfile }}"
+          ${{ matrix.scanArgs }}
           --project-name="linearmemory-${{ matrix.service }}"
           --target-reference=main

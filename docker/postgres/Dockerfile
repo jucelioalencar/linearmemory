@@ -6,6 +6,7 @@ ARG PGVECTOR_VERSION=0.8.6
 USER root
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
        build-essential \
        ca-certificates \
