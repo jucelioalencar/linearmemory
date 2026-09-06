@@ -1,24 +1,21 @@
-FROM ghcr.io/evokoa/pggraph:1.2.0
+FROM ghcr.io/evokoa/pggraph:1.2.0 AS pggraph
+
+FROM postgres:17-trixie
 
 ARG PG_MAJOR=17
 ARG PGVECTOR_VERSION=0.8.6
 
-USER root
-
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
-       build-essential \
        ca-certificates \
-       git \
-       postgresql-server-dev-${PG_MAJOR} \
-    && git clone --branch "v${PGVECTOR_VERSION}" --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector \
-    && make -C /tmp/pgvector clean \
-    && make -C /tmp/pgvector OPTFLAGS="" \
-    && make -C /tmp/pgvector install \
-    && rm -rf /tmp/pgvector \
-    && apt-get purge -y --auto-remove build-essential git postgresql-server-dev-${PG_MAJOR} \
+       postgresql-${PG_MAJOR}-cron \
+       postgresql-${PG_MAJOR}-pgvector=${PGVECTOR_VERSION}-1.pgdg13+1 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=pggraph /usr/lib/postgresql/17/lib/graph.so /usr/lib/postgresql/17/lib/graph.so
+COPY --from=pggraph /usr/share/postgresql/17/extension/graph* /usr/share/postgresql/17/extension/
+COPY --from=pggraph /docker-entrypoint-initdb.d/01-create-extensions-and-schedule.sql /docker-entrypoint-initdb.d/01-create-extensions-and-schedule.sql
 
 COPY docker/postgres/init/10-linearmemory.sql /docker-entrypoint-initdb.d/10-linearmemory.sql
 COPY docker/postgres/init/20-protocol-v2.sql /docker-entrypoint-initdb.d/20-protocol-v2.sql
