@@ -16,6 +16,11 @@ const memoryRelationTypes = [
   'validates', 'supersedes', 'related_to'
 ] as const;
 
+const parsedSemanticSearchTimeoutMs = Number.parseInt(process.env.SEMANTIC_SEARCH_TIMEOUT_MS ?? '5000', 10);
+const semanticSearchTimeoutMs = Number.isFinite(parsedSemanticSearchTimeoutMs)
+  ? Math.max(250, parsedSemanticSearchTimeoutMs)
+  : 5_000;
+
 function jsonResult(value: unknown) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }],
@@ -231,7 +236,10 @@ function createServer(): McpServer {
     async ({ executionId, query, scope, memoryTypes, limit }) => {
       const searchStartedAt = performance.now();
       const embeddingStartedAt = performance.now();
-      const queryEmbedding = await createEmbedding(query);
+      // Interactive MCP calls must not wait for a cold or busy local model. If
+      // the provider misses this budget, createEmbedding returns null and the
+      // existing lexical search completes normally.
+      const queryEmbedding = await createEmbedding(query, { timeoutMs: semanticSearchTimeoutMs });
       const embeddingDurationMs = performance.now() - embeddingStartedAt;
       const queryVector = vectorParameter(queryEmbedding);
       const client = await pool.connect();

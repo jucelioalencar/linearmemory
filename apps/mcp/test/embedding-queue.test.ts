@@ -4,16 +4,22 @@ import { createServer } from 'node:http';
 import test from 'node:test';
 import { createDomain, createWorkspace } from '../src/catalog.js';
 import { ensureAgent, pool } from '../src/db.js';
-import { enqueueEmbeddingJob, processEmbeddingJob, saveEmbeddingSettings } from '../src/embeddings.js';
+import { createEmbedding, enqueueEmbeddingJob, processEmbeddingJob, saveEmbeddingSettings } from '../src/embeddings.js';
 import { createOrReuseSession } from '../src/sessions.js';
 
 test('PostgreSQL queue processes embeddings asynchronously with retries and no duplicate claims', async () => {
   let requests = 0;
   let failNext = false;
+  let delayNext = false;
   const provider = createServer((request, response) => {
     requests += 1;
     request.resume();
     response.setHeader('content-type', 'application/json');
+    if (delayNext) {
+      delayNext = false;
+      setTimeout(() => response.end(JSON.stringify({ data: [{ embedding: Array.from({ length: 1536 }, () => 0.02) }] })), 100);
+      return;
+    }
     if (failNext) {
       failNext = false;
       response.statusCode = 503;
@@ -61,6 +67,13 @@ test('PostgreSQL queue processes embeddings asynchronously with retries and no d
       endpoint: `http://127.0.0.1:${address.port}/embeddings`,
       model: 'queue-integration-model'
     });
+
+    delayNext = true;
+    const interactiveStartedAt = performance.now();
+    assert.equal(await createEmbedding(`interactive-timeout-${suffix}`, { timeoutMs: 20 }), null);
+    assert.ok(performance.now() - interactiveStartedAt < 500, 'interactive embedding must respect its latency budget');
+    await new Promise(resolve => setTimeout(resolve, 120));
+    requests = 0;
 
     const createMemory = async (title: string) => {
       const result = await setupClient.query<{ id: string }>(

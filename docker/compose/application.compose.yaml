@@ -33,6 +33,7 @@ services:
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      SEMANTIC_SEARCH_TIMEOUT_MS: ${SEMANTIC_SEARCH_TIMEOUT_MS:-5000}
       CONFIG_ENCRYPTION_KEY_FILE: /run/secrets/postgres-password
       OLLAMA_URL: http://ollama:11434
     secrets:
