@@ -303,7 +303,7 @@ cd apps/mcp
 npm run benchmark:performance -- --event-iterations=50 --search-iterations=30
 ```
 
-Use `PERFORMANCE_SLOW_REQUEST_MS` to configure the warning threshold, `PERFORMANCE_LOG_CAPACITY` to configure retained samples, and `EMBEDDING_CACHE_SIZE` to configure the in-process semantic-query cache.
+Use `PERFORMANCE_SLOW_REQUEST_MS` to configure the warning threshold, `PERFORMANCE_LOG_CAPACITY` to configure retained samples, and `EMBEDDING_CACHE_SIZE` to configure the in-process semantic-query cache. `SEMANTIC_SEARCH_TIMEOUT_MS` controls how long an interactive memory search waits for its query embedding (default: 5000 ms); when that budget expires, the tool immediately falls back to lexical search while background embedding jobs keep their longer processing budget.
 
 ### Isolated integration tests
 

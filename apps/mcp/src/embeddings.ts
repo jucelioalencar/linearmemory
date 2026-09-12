@@ -213,7 +213,7 @@ export async function saveEmbeddingSettings(input: {
   return getEmbeddingState();
 }
 
-export async function createEmbedding(text: string): Promise<number[] | null> {
+export async function createEmbedding(text: string, options: { timeoutMs?: number } = {}): Promise<number[] | null> {
   const settings = await resolveSettings();
   const definition = providerDefinition(settings.provider);
   if (!settings.enabled || !settings.endpoint || (definition.credentialRequired && !settings.apiKey)) return null;
@@ -239,7 +239,7 @@ export async function createEmbedding(text: string): Promise<number[] | null> {
       body: JSON.stringify(settings.provider === 'azure-openai'
         ? { input: text, dimensions: EMBEDDING_DIMENSIONS }
         : { model: settings.model, input: text, dimensions: EMBEDDING_DIMENSIONS }),
-      signal: AbortSignal.timeout(isOllama ? 120_000 : 30_000)
+      signal: AbortSignal.timeout(options.timeoutMs ?? (isOllama ? 120_000 : 30_000))
     });
     if (!response.ok) throw new Error(`Embedding provider returned HTTP ${response.status}.`);
     const payload = await response.json() as { data?: Array<{ embedding?: number[] }>; embeddings?: number[][] };
