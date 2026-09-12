@@ -9,6 +9,7 @@ import { createDomain, createWorkspace, updateDomain, updateWorkspace } from './
 import { createOrReuseSession, finishSessionIfIdle } from './sessions.js';
 import { registerBackupRoutes } from './backup.js';
 import { performanceMiddleware, performanceSummary, recordPerformance } from './performance.js';
+import { eventTitleSchema, reflectionInputSchema } from './tool-inputs.js';
 
 const memoryRelationTypes = [
   'supports', 'depends_on', 'caused', 'contradicts', 'refines', 'implements',
@@ -316,7 +317,7 @@ function createServer(): McpServer {
         executionId: z.string().uuid(),
         timestamp: z.string().datetime({ offset: true }).optional().describe('When the event occurred. Omit to use server time.'),
         eventType: z.enum(protocolEventTypes).describe('Closed event category describing the observable action.'),
-        title: z.string().min(2).max(160).describe('Short human-readable event label.'),
+        title: eventTitleSchema,
         description: z.string().min(2).describe('What happened and why it matters operationally, without hidden reasoning.'),
         source: z.enum(protocolSources).default('Agent').describe('Origin of the observable event.'),
         metadata: z.record(z.string(), z.unknown()).default({}).describe('Structured identifiers and measurements, such as toolName, memoryId, artifactPath or errorCode.'),
@@ -561,17 +562,9 @@ function createServer(): McpServer {
     'record_reflection',
     {
       description: `Record execution learning separately from durable facts. Use near the end of an execution to capture what worked, what failed, assumptions and reusable lessons. Reflections are never returned by search_memory and never become facts unless a later complete_execution explicitly consolidates validated knowledge.`,
-      inputSchema: z.object({
-        executionId: z.string().uuid(),
-        whatWorked: z.array(z.string().min(2)).default([]).describe('Approaches that produced observable positive results.'),
-        whatFailed: z.array(z.string().min(2)).default([]).describe('Attempts that failed or created avoidable cost, including evidence when known.'),
-        assumptions: z.array(z.string().min(2)).default([]).describe('Unverified assumptions that future executions should re-check.'),
-        lessonsLearned: z.array(z.string().min(2)).default([]).describe('Reusable process lessons, not product facts.'),
-        suggestedImprovements: z.array(z.string().min(2)).default([]).describe('Concrete improvements for future execution behavior.'),
-        confidence: z.number().min(0).max(1).optional()
-      })
+      inputSchema: reflectionInputSchema
     },
-    async ({ executionId, whatWorked, whatFailed, assumptions, lessonsLearned, suggestedImprovements, confidence }) => {
+    async ({ executionId, whatWorked, whatFailed, assumptions, lessonsLearned, suggestedImprovements, recommendation, title, reflectionType, confidence }) => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -580,10 +573,10 @@ function createServer(): McpServer {
              (execution_id, what_worked, what_failed, assumptions, lessons_learned, suggested_improvements, confidence)
            SELECT id,$2,$3,$4,$5,$6,$7 FROM memory.executions WHERE id=$1 AND status='active'
            RETURNING id, execution_id, what_worked, what_failed, assumptions, lessons_learned, suggested_improvements, confidence, created_at`,
-          [executionId, whatWorked, whatFailed, assumptions, lessonsLearned, suggestedImprovements, confidence ?? null]
+          [executionId, whatWorked, whatFailed, assumptions, lessonsLearned, [...suggestedImprovements, ...recommendation], confidence ?? null]
         );
         if (!result.rows[0]) throw new Error('Active execution not found.');
-        const event = await addProtocolEvent(client, executionId, 'ReflectionRecorded', 'Execution reflection recorded', 'Process learning was captured separately from durable memory.', 'Agent', { reflectionId: result.rows[0].id }, confidence);
+        const event = await addProtocolEvent(client, executionId, 'ReflectionRecorded', title ?? 'Execution reflection recorded', 'Process learning was captured separately from durable memory.', 'Agent', { reflectionId: result.rows[0].id, ...(reflectionType ? { reflectionType } : {}) }, confidence);
         await client.query('COMMIT');
         return jsonResult({ reflection: result.rows[0], event, durableMemoryChanged: false });
       } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
