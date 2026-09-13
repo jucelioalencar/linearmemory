@@ -52,7 +52,7 @@ try {
   let cursor=0, failedWorkflows=0;
   await Promise.all(Array.from({length:concurrency},async(_,worker)=>{
     while (cursor<iterations) {
-      const index=cursor++;
+      cursor++;
       const key=`perf-${randomUUID()}`;
       try {
         const domain=await call('create_domain',{domainKey:key,name:'Performance domain',description:'Isolated synthetic load test domain.'});
