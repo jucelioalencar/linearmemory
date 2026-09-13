@@ -1,0 +1,150 @@
+{
+  "timestamp": "2026-09-13T00:23:29.387Z",
+  "factor": 100,
+  "mode": "semantic",
+  "provider": "local deterministic vector fixture; model inference excluded",
+  "concurrency": 5,
+  "iterations": 20,
+  "failedWorkflows": 0,
+  "durationMs": 32976.0367,
+  "requestsPerSecond": 11.523519441012754,
+  "uncoveredTools": [],
+  "metrics": {
+    "create_domain": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 55.73,
+      "p95Ms": 86.82,
+      "p99Ms": 121.6,
+      "maxMs": 121.6
+    },
+    "update_domain": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 48.71,
+      "p95Ms": 110.26,
+      "p99Ms": 129.66,
+      "maxMs": 129.66
+    },
+    "create_workspace": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 56.4,
+      "p95Ms": 132.64,
+      "p99Ms": 133.24,
+      "maxMs": 133.24
+    },
+    "update_workspace": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 57.63,
+      "p95Ms": 97.78,
+      "p99Ms": 113.48,
+      "maxMs": 113.48
+    },
+    "find_domain": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 42.16,
+      "p95Ms": 91.13,
+      "p99Ms": 98.24,
+      "maxMs": 98.24
+    },
+    "find_workspace": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 62.67,
+      "p95Ms": 101.38,
+      "p99Ms": 101.59,
+      "maxMs": 101.59
+    },
+    "suggest_workspace": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 42.27,
+      "p95Ms": 100.28,
+      "p99Ms": 101.58,
+      "maxMs": 101.58
+    },
+    "begin_context": {
+      "samples": 40,
+      "errors": 0,
+      "p50Ms": 106.59,
+      "p95Ms": 186.7,
+      "p99Ms": 213.38,
+      "maxMs": 213.38
+    },
+    "add_execution_event": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 64.13,
+      "p95Ms": 175.38,
+      "p99Ms": 176.22,
+      "maxMs": 176.22
+    },
+    "search_memory": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 3652.91,
+      "p95Ms": 4556.26,
+      "p99Ms": 4569.17,
+      "maxMs": 4569.17
+    },
+    "find_memory_relations": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 398.07,
+      "p95Ms": 479.38,
+      "p99Ms": 483.37,
+      "maxMs": 483.37
+    },
+    "record_reflection": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 102.1,
+      "p95Ms": 150.06,
+      "p99Ms": 154.84,
+      "maxMs": 154.84
+    },
+    "search_reflections": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 2548.85,
+      "p95Ms": 2656.53,
+      "p99Ms": 2662.68,
+      "maxMs": 2662.68
+    },
+    "complete_execution": {
+      "samples": 40,
+      "errors": 0,
+      "p50Ms": 118.96,
+      "p95Ms": 298.38,
+      "p99Ms": 326.06,
+      "maxMs": 326.06
+    },
+    "link_memories": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 68.63,
+      "p95Ms": 143.16,
+      "p99Ms": 150.22,
+      "maxMs": 150.22
+    },
+    "resolve_memory_conflict": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 88.04,
+      "p95Ms": 146.44,
+      "p99Ms": 154.7,
+      "maxMs": 154.7
+    },
+    "unlink_memories": {
+      "samples": 20,
+      "errors": 0,
+      "p50Ms": 110.1,
+      "p95Ms": 213.91,
+      "p99Ms": 216.73,
+      "maxMs": 216.73
+    }
+  }
+}

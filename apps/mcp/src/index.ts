@@ -10,6 +10,8 @@ import { createOrReuseSession, finishSessionIfIdle } from './sessions.js';
 import { registerBackupRoutes } from './backup.js';
 import { performanceMiddleware, performanceSummary, recordPerformance } from './performance.js';
 import { eventTitleSchema, reflectionInputSchema } from './tool-inputs.js';
+import { similarityQuery } from './similarity-query.js';
+import { relationCandidatesSql } from './relation-candidates.js';
 
 const memoryRelationTypes = [
   'supports', 'depends_on', 'caused', 'contradicts', 'refines', 'implements',
@@ -250,29 +252,33 @@ function createServer(): McpServer {
         await client.query(`SET LOCAL pg_trgm.similarity_threshold = '0.15'`);
         const databaseStartedAt = performance.now();
         const memories = await client.query(
-          `WITH candidates AS (
-             SELECT n.id,n.node_type,n.title,n.summary,n.content,n.confidence,n.importance,n.created_at,
-                    w.id AS workspace_id,w.workspace_key,COALESCE(a.agent_key,'agent_default') AS agent_id,
+          `WITH candidates AS MATERIALIZED (
+             SELECT n.id,n.importance,n.created_at,
                     ts_rank_cd(n.search_document,plainto_tsquery('simple', $2))
                       + similarity(lower(n.title),lower($2)) AS lexical_relevance,
                     CASE WHEN $7::vector IS NULL OR n.embedding IS NULL THEN 0
                          ELSE GREATEST(0,1-(n.embedding <=> $7::vector)) END AS semantic_relevance
                FROM memory.memory_nodes n
-               JOIN memory.workspaces w ON w.id=n.workspace_id
-               LEFT JOIN memory.sessions s ON s.id=n.source_session_id
-               LEFT JOIN memory.agents a ON a.id=s.agent_id
               WHERE n.status='active'
-                AND (($3='Workspace' AND w.id=$1) OR ($3='Domain' AND w.domain_id=$4))
+                AND n.workspace_id=ANY(ARRAY(SELECT id FROM memory.workspaces WHERE ($3='Workspace' AND id=$1) OR ($3='Domain' AND domain_id=$4)))
                 AND (cardinality($5::text[])=0 OR n.node_type=ANY($5::text[]))
                 AND (n.search_document @@ plainto_tsquery('simple', $2)
                      OR lower(n.title) % lower($2)
                      OR ($7::vector IS NOT NULL AND n.embedding IS NOT NULL))
-           )
+           ), ranked AS (
            SELECT *,CASE WHEN $7::vector IS NULL THEN lexical_relevance
                          ELSE (.55*LEAST(1,lexical_relevance))+(.45*semantic_relevance) END AS relevance
              FROM candidates
             WHERE lexical_relevance > .08 OR ($7::vector IS NOT NULL AND semantic_relevance > .35)
-            ORDER BY relevance DESC,importance DESC,created_at DESC LIMIT $6`,
+            ORDER BY relevance DESC,importance DESC,created_at DESC LIMIT $6)
+           SELECT n.id,n.node_type,n.title,n.summary,n.content,n.confidence,n.importance,n.created_at,
+                  w.id AS workspace_id,w.workspace_key,COALESCE(a.agent_key,'agent_default') AS agent_id,
+                  r.lexical_relevance,r.semantic_relevance,r.relevance
+             FROM ranked r JOIN memory.memory_nodes n ON n.id=r.id
+             JOIN memory.workspaces w ON w.id=n.workspace_id
+             LEFT JOIN memory.sessions s ON s.id=n.source_session_id
+             LEFT JOIN memory.agents a ON a.id=s.agent_id
+            ORDER BY r.relevance DESC,n.importance DESC,n.created_at DESC`,
           [execution.rows[0].workspace_id, query, scope, execution.rows[0].domain_id, memoryTypes, limit, queryVector]
         );
         const databaseDurationMs = performance.now() - databaseStartedAt;
@@ -397,20 +403,7 @@ function createServer(): McpServer {
           [memoryId]
         ),
         pool.query(
-          `SELECT n.id,n.node_type,n.title,n.summary,n.confidence,n.importance,
-                  w.workspace_key,d.domain_key,COALESCE(a.agent_key,'agent_default') AS agent_key,
-                  GREATEST(similarity(n.title || ' ' || n.summary,$4),
-                           similarity(n.title,$4),similarity(n.summary,$4)) AS similarity
-             FROM memory.memory_nodes n
-             JOIN memory.workspaces w ON w.id=n.workspace_id
-             JOIN memory.knowledge_domains d ON d.id=w.domain_id
-             LEFT JOIN memory.sessions s ON s.id=n.source_session_id
-             LEFT JOIN memory.agents a ON a.id=s.agent_id
-            WHERE n.id<>$1 AND n.status='active'
-              AND (($2='Workspace' AND n.workspace_id=$5) OR ($2='Domain' AND w.domain_id=$6))
-              AND GREATEST(similarity(n.title || ' ' || n.summary,$4),
-                           similarity(n.title,$4),similarity(n.summary,$4)) >= $3
-            ORDER BY similarity DESC,n.importance DESC,n.created_at DESC LIMIT $7`,
+          relationCandidatesSql,
           [memoryId, scope, similarityThreshold, comparisonText, source.workspace_id, source.domain_id, limit]
         )
       ]);
@@ -604,20 +597,24 @@ function createServer(): McpServer {
       })
     },
     async ({ executionId, query, scope, limit }) => {
-      const result = await pool.query(
+      const result = await similarityQuery(
         `WITH context AS (
            SELECT workspace_id,domain_id FROM memory.executions WHERE id=$1 AND status='active'
+         ), matches AS MATERIALIZED (
+           SELECT id,execution_id,what_worked,what_failed,assumptions,lessons_learned,suggested_improvements,confidence,created_at,
+                  similarity(search_text,unaccent($2)) AS relevance
+             FROM memory.reflections
+            WHERE search_text % unaccent($2) AND similarity(search_text,unaccent($2)) > .05
          )
          SELECT r.id,r.execution_id,r.what_worked,r.what_failed,r.assumptions,r.lessons_learned,
                 r.suggested_improvements,r.confidence,r.created_at,w.workspace_key,
-                similarity(unaccent(array_to_string(r.lessons_learned || r.what_failed || r.what_worked,' ')),unaccent($2)) AS relevance
-           FROM memory.reflections r
+                r.relevance
+           FROM matches r
            JOIN memory.executions x ON x.id=r.execution_id
            JOIN memory.workspaces w ON w.id=x.workspace_id
            JOIN context c ON (($3='Workspace' AND x.workspace_id=c.workspace_id) OR ($3='Domain' AND x.domain_id=c.domain_id))
-          WHERE similarity(unaccent(array_to_string(r.lessons_learned || r.what_failed || r.what_worked,' ')),unaccent($2)) > .05
           ORDER BY relevance DESC,r.created_at DESC LIMIT $4`,
-        [executionId, query, scope, limit]
+        [executionId, query, scope, limit], .05
       );
       return jsonResult({ results: result.rows, instruction: 'Treat reflections as process hypotheses. Validate them in the current execution before creating durable memory.' });
     }
