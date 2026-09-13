@@ -7,8 +7,15 @@ const tables = ['sessions', 'executions', 'memory_events', 'execution_events', '
 const client = await pool.connect();
 try {
   const { rows: [db] } = await client.query('SELECT current_database() AS name');
-  if (!db.name.endsWith('_perf') || process.env.PERF_ISOLATED !== 'yes') throw new Error('Requires an isolated *_perf database and PERF_ISOLATED=yes.');
-  if (!Number.isInteger(factor) || factor < 1 || factor > 100) throw new Error('PERF_SCALE must be 1..100');
+  const validationError = !db.name.endsWith('_perf') || process.env.PERF_ISOLATED !== 'yes'
+    ? 'Requires an isolated *_perf database and PERF_ISOLATED=yes.'
+    : !Number.isInteger(factor) || factor < 1 || factor > 100
+      ? 'PERF_SCALE must be 1..100'
+      : undefined;
+  if (validationError) {
+    console.error(validationError);
+    process.exitCode = 1;
+  } else {
   await client.query('BEGIN');
   await client.query('CREATE TABLE memory.performance_fixture_marker (factor integer NOT NULL)');
   await client.query('INSERT INTO memory.performance_fixture_marker VALUES ($1)', [factor]);
@@ -56,15 +63,27 @@ try {
     JOIN pg_class p ON p.oid=c.confrelid JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=c.conkey[1]
     JOIN pg_attribute b ON b.attrelid=p.oid AND b.attnum=c.confkey[1]
     WHERE c.contype='f' AND ns.nspname='memory'`);
+  let referenceError;
   for(const ref of references) {
     const { rows: [check] }=await client.query(`SELECT count(*)::int n FROM memory."${ref.child}" c LEFT JOIN memory."${ref.parent}" p ON p."${ref.parent_column}"=c."${ref.child_column}" WHERE c."${ref.child_column}" IS NOT NULL AND p."${ref.parent_column}" IS NULL`);
-    if(check.n) throw new Error(`Fixture has broken reference: ${ref.child}.${ref.child_column}`);
+    if (check.n) {
+      referenceError = `Fixture has broken reference: ${ref.child}.${ref.child_column}`;
+      break;
+    }
   }
-  await client.query('COMMIT');
-  await client.query('ANALYZE');
+  if (referenceError) {
+    await client.query('ROLLBACK');
+    console.error(referenceError);
+    process.exitCode = 1;
+  } else {
+    await client.query('COMMIT');
+    await client.query('ANALYZE');
+  }
+  }
 } catch (error) {
   await client.query('ROLLBACK');
-  throw error;
+  console.error('Unable to create the performance fixture.', error);
+  process.exitCode = 1;
 } finally {
   client.release();
   await pool.end();
