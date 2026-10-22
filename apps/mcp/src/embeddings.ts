@@ -87,14 +87,14 @@ function encryptionKey(): Buffer {
   return createHash('sha256').update(secret).digest();
 }
 
-function encryptCredential(value: string): string {
+export function encryptCredential(value: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
   const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
   return `v1:${iv.toString('base64')}:${cipher.getAuthTag().toString('base64')}:${encrypted.toString('base64')}`;
 }
 
-function decryptCredential(value?: string): string {
+export function decryptCredential(value?: string): string {
   if (!value) return '';
   try {
     const [version, encodedIv, encodedTag, encodedPayload] = value.split(':');

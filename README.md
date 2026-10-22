@@ -162,6 +162,18 @@ When semantic search is enabled, LinearMemory automatically generates embeddings
 
 Environment variables `EMBEDDING_ENDPOINT`, `EMBEDDING_API_KEY`, and `EMBEDDING_MODEL` remain supported as deployment-level fallbacks, but the web configuration takes precedence.
 
+### Optional search relevance filter
+
+Open **Settings → Semantic memory → Search relevance filter** to enable OpenAI Decisions (`gpt-6-luna`) or TypeSafe Jev (`jev-latest`). The filter is disabled by default and works with lexical-only and combined lexical/semantic `search_memory` results. It evaluates the ranked candidates within the requested `limit`, preserves their order, and can return fewer results or none. It does not refill the candidate list.
+
+Configure the minimum relevance percentage (default 70%), model, credential, and total evaluation timeout (default 5 seconds). Credentials use the existing encrypted settings storage and are never returned by the settings API. Switching providers requires that provider's credential. Enabled filtering sends the query and candidate title, summary, and content to the selected external provider. The percentage is a predicted probability of useful relevance, **not a measured accuracy guarantee**; calibrate it with labeled searches from your workload.
+
+Search logs retain immutable snapshots of every candidate, lexical/semantic scores, the decision probability, applied threshold, and the reason for retaining or eliminating it. Expand the audit in the list or open its modal. Provider failures, refusals, malformed answers, timeouts, missing credentials, and candidates exceeding the 24 KB context safety limit keep the affected memory and record the fallback reason. Evaluations run with at most four concurrent requests and one shared deadline.
+
+Each audit reports estimated result tokens before/after filtering, tokens saved and percentage, provider-reported input/output usage, and a net token estimate that may be negative. Result tokens are estimated as pretty-printed UTF-8 JSON bytes divided by four; these are not exact tokenizer counts or monetary savings. Provider usage can be incomplete on failed requests, in which case net savings are unknown. Counts compare only the result array, excluding the small response envelope. Discarded content is stored for human audit and is never included in the MCP search response.
+
+Contracts: [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) and [TypeSafe System One](https://docs.typesafe.ai/api/system-one). Settings are available at `GET/PUT /api/settings/search-filter`; existing search snapshots are returned by `GET /api/search-results/:eventId` without rerunning retrieval.
+
 ### Backup and restore
 
 Open **Settings → Backup & restore** to download a complete JSON backup of the authoritative `memory` tables. Restore validates the LinearMemory backup format and requires explicit confirmation before atomically replacing the current data. The graph projection is rebuilt after a successful restore.
