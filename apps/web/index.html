@@ -279,5 +279,6 @@ function compactSearchFlow(search){const results=search.payload?.results||[],cou
     function enableCollapsibleActivityRail(){document.querySelectorAll('[data-activity]').forEach(button=>button.onclick=()=>{const mode=button.dataset.activity,isOpen=!elementById('appShell').classList.contains('sidebar-collapsed');if(isOpen&&S.activityMode===mode){setSidebarCollapsed(true);return}setActivityMode(mode)})}
     document.addEventListener('visibilitychange',()=>{if(!document.hidden){stopReplay(true);stopCorrelationReplay(true);load()}});applyTheme(S.theme,false);initializeWorkspaceUi();applyLanguage(S.language,false);initializeLiveActivity();enableCollapsibleActivityRail();load();
   </script>
+  <script src="search-filter.js"></script>
 </body>
 </html>

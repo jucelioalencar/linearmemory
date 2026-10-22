@@ -1,3 +1,4 @@
+import { filterSearchResults, resolveFilterSettings, registerSearchFilterRoutes } from './search-filter.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
@@ -237,6 +238,7 @@ function createServer(): McpServer {
     },
     async ({ executionId, query, scope, memoryTypes, limit }) => {
       const searchStartedAt = performance.now();
+      const filterSettings = await resolveFilterSettings();
       const embeddingStartedAt = performance.now();
       // Interactive MCP calls must not wait for a cold or busy local model. If
       // the provider misses this budget, createEmbedding returns null and the
@@ -282,12 +284,15 @@ function createServer(): McpServer {
           [execution.rows[0].workspace_id, query, scope, execution.rows[0].domain_id, memoryTypes, limit, queryVector]
         );
         const databaseDurationMs = performance.now() - databaseStartedAt;
+        const filtered = await filterSearchResults(query, memories.rows, filterSettings);
         const event = await addProtocolEvent(client, executionId, 'MemorySearched', 'Durable memory searched', query, 'Memory', {
           scope,
-          resultCount: memories.rowCount ?? 0,
+          resultCount: filtered.results.length,
+          filter: filtered.audit,
+          memoryTypes, limit,
           semanticSearchUsed: queryEmbedding !== null,
-          resultMemoryIds: memories.rows.map(memory => memory.id),
-          results: memories.rows.map(memory => ({
+          resultMemoryIds: filtered.results.map(memory => memory.id),
+          results: filtered.results.map(memory => ({
             id: memory.id,
             title: memory.title,
             summary: memory.summary,
@@ -318,7 +323,7 @@ function createServer(): McpServer {
           statusCode: 200,
           timestamp: new Date().toISOString()
         });
-        return jsonResult({ results: memories.rows, searchEvent: event, instruction: 'For each result that affects the work, call add_execution_event with eventType MemoryRead and include memoryId in metadata.' });
+        return jsonResult({ results: filtered.results, searchEvent: { id: event.id, execution_id: event.execution_id, sequence: event.sequence }, filter: { enabled: filtered.audit.enabled, removedCount: filtered.audit.removedCount, estimatedTokensSaved: filtered.audit.tokens.saved }, instruction: 'For each result that affects the work, call add_execution_event with eventType MemoryRead and include memoryId in metadata.' });
       } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
     }
   );
@@ -774,6 +779,7 @@ app.get('/api/search-results/:eventId', async (req, res) => {
     );
     if (!event.rows[0]) return res.status(404).json({ error: 'Memory search event not found.' });
     const source = event.rows[0];
+    if (Array.isArray(source.metadata?.results)) return res.json({ results: source.metadata.results, filter: source.metadata.filter, reconstructed: false });
     const count = Math.min(50, Math.max(0, Number(source.metadata?.resultCount ?? 0)));
     if (!count) return res.json({ results: [] });
     await pool.query(`SET pg_trgm.similarity_threshold = '0.15'`);
@@ -996,6 +1002,7 @@ app.get('/api/explorer', async (req, res) => {
   }
 });
 registerEmbeddingSettingsRoutes(app);
+registerSearchFilterRoutes(app);
 registerBackupRoutes(app);
 app.all('/mcp', (req, res) => void nodeHandler(req, res, req.body));
 startEmbeddingWorker();
