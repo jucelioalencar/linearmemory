@@ -1,6 +1,6 @@
 FROM ghcr.io/evokoa/pggraph:1.2.0 AS pggraph
 
-FROM golang:1.26.6-trixie AS gosu-builder
+FROM golang:1.26.10-trixie AS gosu-builder
 
 ARG GOSU_COMMIT=6456aaa0f3c854d199d0f037f068eb97515b7513
 
